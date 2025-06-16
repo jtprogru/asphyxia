@@ -1,0 +1,14 @@
+[package]
+name = "asphyxia"
+version = "0.1.0"
+edition = "2024"
+authors = [
+    "Mikhail Savin <jtprogru@gmail.com>"
+]
+
+[dependencies]
+clap = { version="4.5.40", features = ["derive"] }
+rayon = "1.10.0"
+indicatif = "0.17.11"
+owo-colors = "4.2.1"
+ipnetwork = "0.20.0"

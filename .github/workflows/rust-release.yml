@@ -1,0 +1,167 @@
+name: Rust Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build-and-release:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: ['stable']
+        arch: ['x86_64']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-msvc' || (matrix.os == 'macos-latest' && 'x86_64-apple-darwin' || 'x86_64-unknown-linux-gnu') }}
+
+      - name: Install cargo binaries
+        run: |
+          cargo install cargo-bundle-licenses
+          cargo bundle-licenses --version
+
+      - name: Build project
+        run: |
+          cargo build --release --locked
+
+      - name: Package binaries
+        run: |
+          mkdir -p release_binaries
+          cp target/release/asphyxia release_binaries/
+          chmod +x release_binaries/asphyxia
+          zip -r release_binaries_${{ matrix.os }}_${{ matrix.arch }}.zip release_binaries
+
+      - name: Upload binaries as artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: binaries-${{ matrix.os }}-${{ matrix.arch }}
+          path: release_binaries_${{ matrix.os }}_${{ matrix.arch }}.zip
+
+    outputs:
+      tag_name: ${{ github.ref_name }}
+
+  create-release:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get version from tag
+        id: get_version
+        run: |
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ env.VERSION }}
+          draft: false
+          prerelease: false
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: binaries-ubuntu-latest-x86_64
+          path: artifacts/ubuntu
+      - name: Download Artifacts (Windows)
+        uses: actions/download-artifact@v3
+        with:
+          name: binaries-windows-latest-x86_64
+          path: artifacts/windows
+      - name: Download Artifacts (MacOS)
+        uses: actions/download-artifact@v3
+        with:
+          name: binaries-macos-latest-x86_64
+          path: artifacts/macos
+
+      - name: Upload Ubuntu Binary to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/ubuntu/release_binaries_ubuntu-latest_x86_64.zip
+          asset_name: asphyxia-${{ env.VERSION }}-linux-x86_64.zip
+          asset_content_type: application/zip
+
+      - name: Upload Windows Binary to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/windows/release_binaries_windows-latest_x86_64.zip
+          asset_name: asphyxia-${{ env.VERSION }}-windows-x86_64.zip
+          asset_content_type: application/zip
+
+      - name: Upload MacOS Binary to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/macos/release_binaries_macos-latest_x86_64.zip
+          asset_name: asphyxia-${{ env.VERSION }}-macos-x86_64.zip
+          asset_content_type: application/zip
+
+  updatehomebrew:
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout brew tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: jtprogru/homebrew-asphyxia # замени на свой
+          ref: main
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Download macOS binary
+        uses: actions/download-artifact@v3
+        with:
+          name: binaries-macos-latest-x86_64
+          path: artifacts/macos
+
+      - name: Calculate SHA256
+        id: sha
+        run: |
+          SHA=$(sha256sum artifacts/macos/release_binaries_macos-latest_x86_64.zip | awk '{print $1}')
+          echo "sha=$SHA" >> $GITHUB_ENV
+
+      - name: Generate Formula
+        run: |
+          VERSION=${{ env.VERSION }}
+          cat <<EOL > Formula/asphyxia.rb
+          class Asphyxia < Formula
+            desc "Short description of your tool"
+            homepage "https://github.com/jtprogru/asphyxia"
+            version "\${VERSION}"
+
+            if OS.mac? && Hardware::CPU.intel?
+              url "https://github.com/jtprogru/asphyxia/releases/download/v\${VERSION}/asphyxia-\${VERSION}-macos-x86_64.zip"
+              sha256 "${{ env.sha }}"
+            end
+
+            def install
+              bin.install "asphyxia"
+            end
+          end
+          EOL
+
+      - name: Commit and push formula
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add Formula/asphyxia.rb
+          git commit -m "Update asphyxia to v${{ env.VERSION }}"
+          git push origin main
