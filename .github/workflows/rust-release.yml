@@ -95,33 +95,33 @@ jobs:
 
       # Download all artifacts
       - name: Download Artifacts (Linux x86_64)
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: binaries-ubuntu-latest-x86_64
           path: artifacts/linux-x86_64
       - name: Download Artifacts (Linux arm64)
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: binaries-ubuntu-latest-arm64
           path: artifacts/linux-arm64
       - name: Download Artifacts (MacOS x86_64)
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: binaries-macos-latest-x86_64
           path: artifacts/macos-x86_64
       - name: Download Artifacts (MacOS arm64)
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: binaries-macos-latest-arm64
           path: artifacts/macos-arm64
       - name: Download Artifacts (Windows x86_64)
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: binaries-windows-latest-x86_64
           path: artifacts/windows-x86_64
       # Если нужно, раскомментируйте для Windows ARM64
       # - name: Download Artifacts (Windows arm64)
-      #   uses: actions/download-artifact@v3
+      #   uses: actions/download-artifact@v4
       #   with:
       #     name: binaries-windows-latest-arm64
       #     path: artifacts/windows-arm64
@@ -200,12 +200,12 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
       - name: Download macOS x86_64 binary
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: binaries-macos-latest-x86_64
           path: artifacts/macos-x86_64
       - name: Download macOS arm64 binary
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: binaries-macos-latest-arm64
           path: artifacts/macos-arm64
