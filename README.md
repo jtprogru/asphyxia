@@ -1,5 +1,7 @@
 # Asphyxia
 
+[![Rust Release](https://github.com/jtprogru/asphyxia/actions/workflows/rust-release.yml/badge.svg)](https://github.com/jtprogru/asphyxia/actions/workflows/rust-release.yml)
+
 A powerful network utility tool written in Rust.
 
 ## Description
