@@ -10,9 +10,26 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        rust: ['stable']
-        arch: ['x86_64']
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            rust_target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            arch: x86_64
+            rust_target: x86_64-apple-darwin
+          - os: macos-latest
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+          - os: windows-latest
+            arch: x86_64
+            rust_target: x86_64-pc-windows-msvc
+          # Если нужно, раскомментируйте для Windows ARM64
+          # - os: windows-latest
+          #   arch: arm64
+          #   rust_target: aarch64-pc-windows-msvc
 
     steps:
       - name: Checkout repository
@@ -21,8 +38,8 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
-          targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-msvc' || (matrix.os == 'macos-latest' && 'x86_64-apple-darwin' || 'x86_64-unknown-linux-gnu') }}
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
 
       - name: Install cargo binaries
         run: |
@@ -31,20 +48,27 @@ jobs:
 
       - name: Build project
         run: |
-          cargo build --release --locked
+          cargo build --release --locked --target ${{ matrix.rust_target }}
 
       - name: Package binaries
         run: |
           mkdir -p release_binaries
-          cp target/release/asphyxia release_binaries/
-          chmod +x release_binaries/asphyxia
-          zip -r release_binaries_${{ matrix.os }}_${{ matrix.arch }}.zip release_binaries
+          cp target/${{ matrix.rust_target }}/release/asphyxia release_binaries/
+          chmod +x release_binaries/asphyxia || true
+          cd release_binaries
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            mv asphyxia asphyxia.exe
+            zip ../asphyxia-${{ matrix.os }}-${{ matrix.arch }}.zip asphyxia.exe
+          else
+            zip ../asphyxia-${{ matrix.os }}-${{ matrix.arch }}.zip asphyxia
+          fi
+          cd ..
 
       - name: Upload binaries as artifacts
         uses: actions/upload-artifact@v3
         with:
           name: binaries-${{ matrix.os }}-${{ matrix.arch }}
-          path: release_binaries_${{ matrix.os }}_${{ matrix.arch }}.zip
+          path: asphyxia-${{ matrix.os }}-${{ matrix.arch }}.zip
 
     outputs:
       tag_name: ${{ github.ref_name }}
@@ -69,51 +93,100 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Download Artifacts
+      # Download all artifacts
+      - name: Download Artifacts (Linux x86_64)
         uses: actions/download-artifact@v3
         with:
           name: binaries-ubuntu-latest-x86_64
-          path: artifacts/ubuntu
-      - name: Download Artifacts (Windows)
+          path: artifacts/linux-x86_64
+      - name: Download Artifacts (Linux arm64)
         uses: actions/download-artifact@v3
         with:
-          name: binaries-windows-latest-x86_64
-          path: artifacts/windows
-      - name: Download Artifacts (MacOS)
+          name: binaries-ubuntu-latest-arm64
+          path: artifacts/linux-arm64
+      - name: Download Artifacts (MacOS x86_64)
         uses: actions/download-artifact@v3
         with:
           name: binaries-macos-latest-x86_64
-          path: artifacts/macos
+          path: artifacts/macos-x86_64
+      - name: Download Artifacts (MacOS arm64)
+        uses: actions/download-artifact@v3
+        with:
+          name: binaries-macos-latest-arm64
+          path: artifacts/macos-arm64
+      - name: Download Artifacts (Windows x86_64)
+        uses: actions/download-artifact@v3
+        with:
+          name: binaries-windows-latest-x86_64
+          path: artifacts/windows-x86_64
+      # Если нужно, раскомментируйте для Windows ARM64
+      # - name: Download Artifacts (Windows arm64)
+      #   uses: actions/download-artifact@v3
+      #   with:
+      #     name: binaries-windows-latest-arm64
+      #     path: artifacts/windows-arm64
 
-      - name: Upload Ubuntu Binary to Release
+      # Upload all binaries to release
+      - name: Upload Linux x86_64 Binary to Release
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: artifacts/ubuntu/release_binaries_ubuntu-latest_x86_64.zip
+          asset_path: artifacts/linux-x86_64/asphyxia-ubuntu-latest-x86_64.zip
           asset_name: asphyxia-${{ env.VERSION }}-linux-x86_64.zip
           asset_content_type: application/zip
 
-      - name: Upload Windows Binary to Release
+      - name: Upload Linux arm64 Binary to Release
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: artifacts/windows/release_binaries_windows-latest_x86_64.zip
+          asset_path: artifacts/linux-arm64/asphyxia-ubuntu-latest-arm64.zip
+          asset_name: asphyxia-${{ env.VERSION }}-linux-arm64.zip
+          asset_content_type: application/zip
+
+      - name: Upload MacOS x86_64 Binary to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/macos-x86_64/asphyxia-macos-latest-x86_64.zip
+          asset_name: asphyxia-${{ env.VERSION }}-macos-x86_64.zip
+          asset_content_type: application/zip
+
+      - name: Upload MacOS arm64 Binary to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/macos-arm64/asphyxia-macos-latest-arm64.zip
+          asset_name: asphyxia-${{ env.VERSION }}-macos-arm64.zip
+          asset_content_type: application/zip
+
+      - name: Upload Windows x86_64 Binary to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/windows-x86_64/asphyxia-windows-latest-x86_64.zip
           asset_name: asphyxia-${{ env.VERSION }}-windows-x86_64.zip
           asset_content_type: application/zip
 
-      - name: Upload MacOS Binary to Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: artifacts/macos/release_binaries_macos-latest_x86_64.zip
-          asset_name: asphyxia-${{ env.VERSION }}-macos-x86_64.zip
-          asset_content_type: application/zip
+      # Если нужно, раскомментируйте для Windows ARM64
+      # - name: Upload Windows arm64 Binary to Release
+      #   uses: actions/upload-release-asset@v1
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   with:
+      #     upload_url: ${{ steps.create_release.outputs.upload_url }}
+      #     asset_path: artifacts/windows-arm64/asphyxia-windows-latest-arm64.zip
+      #     asset_name: asphyxia-${{ env.VERSION }}-windows-arm64.zip
+      #     asset_content_type: application/zip
 
   updatehomebrew:
     needs: create-release
@@ -126,17 +199,27 @@ jobs:
           ref: main
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
-      - name: Download macOS binary
+      - name: Download macOS x86_64 binary
         uses: actions/download-artifact@v3
         with:
           name: binaries-macos-latest-x86_64
-          path: artifacts/macos
+          path: artifacts/macos-x86_64
+      - name: Download macOS arm64 binary
+        uses: actions/download-artifact@v3
+        with:
+          name: binaries-macos-latest-arm64
+          path: artifacts/macos-arm64
 
-      - name: Calculate SHA256
-        id: sha
+      - name: Calculate SHA256 (x86_64)
+        id: sha_x86_64
         run: |
-          SHA=$(sha256sum artifacts/macos/release_binaries_macos-latest_x86_64.zip | awk '{print $1}')
-          echo "sha=$SHA" >> $GITHUB_ENV
+          SHA=$(sha256sum artifacts/macos-x86_64/asphyxia-macos-latest-x86_64.zip | awk '{print $1}')
+          echo "sha_x86_64=$SHA" >> $GITHUB_ENV
+      - name: Calculate SHA256 (arm64)
+        id: sha_arm64
+        run: |
+          SHA=$(sha256sum artifacts/macos-arm64/asphyxia-macos-latest-arm64.zip | awk '{print $1}')
+          echo "sha_arm64=$SHA" >> $GITHUB_ENV
 
       - name: Generate Formula
         run: |
@@ -145,11 +228,15 @@ jobs:
           class Asphyxia < Formula
             desc "Short description of your tool"
             homepage "https://github.com/jtprogru/asphyxia"
-            version "\${VERSION}"
+            version "${VERSION}"
 
             if OS.mac? && Hardware::CPU.intel?
-              url "https://github.com/jtprogru/asphyxia/releases/download/v\${VERSION}/asphyxia-\${VERSION}-macos-x86_64.zip"
-              sha256 "${{ env.sha }}"
+              url "https://github.com/jtprogru/asphyxia/releases/download/v${VERSION}/asphyxia-${VERSION}-macos-x86_64.zip"
+              sha256 "${{ env.sha_x86_64 }}"
+            end
+            if OS.mac? && Hardware::CPU.arm?
+              url "https://github.com/jtprogru/asphyxia/releases/download/v${VERSION}/asphyxia-${VERSION}-macos-arm64.zip"
+              sha256 "${{ env.sha_arm64 }}"
             end
 
             def install
