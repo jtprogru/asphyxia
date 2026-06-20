@@ -12,6 +12,8 @@ homepage = "https://github.com/jtprogru/asphyxia"
 readme = "README.md"
 keywords = ["network", "scanner", "port", "cli", "security"]
 categories = ["command-line-utilities", "network-programming"]
+rust-version = "1.88"
+exclude = [".github/", ".gitignore"]
 
 [dependencies]
 clap = { version="4.5.40", features = ["derive"] }
