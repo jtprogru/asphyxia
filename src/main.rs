@@ -11,10 +11,13 @@ mod utils;
 
 use cli::Args;
 use scanner::{address, port};
-use utils::{parse_ip, parse_ports, parse_subnet, progress_bar};
+use utils::{init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar};
 
 fn main() {
     let args = Args::parse();
+
+    // Size the global rayon pool for I/O-bound scanning before any scan runs.
+    init_scan_pool(args.concurrency());
 
     match args {
         Args::PortScan {
@@ -22,6 +25,7 @@ fn main() {
             range,
             specific,
             timeout,
+            ..
         } => {
             let timeout = Some(Duration::from_millis(timeout));
 
@@ -106,6 +110,7 @@ fn main() {
             target,
             range,
             timeout,
+            ..
         } => {
             let timeout = Some(Duration::from_millis(timeout));
 

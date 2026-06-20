@@ -30,6 +30,9 @@ Examples:
   # Use a custom connection timeout (milliseconds)
   asphyxia ps -t example.com -s 22,80,443 --timeout 500
 
+  # Raise concurrency to speed up a large subnet scan
+  asphyxia as -s 10.0.0.0/22 --concurrency 512
+
 Required arguments:
   For port scanning (ps):
     -t, --host <HOST>    Target host to scan (e.g., example.com)
@@ -63,6 +66,10 @@ pub enum Args {
         /// Connection timeout in milliseconds
         #[arg(long, value_name = "MS", default_value_t = 2000)]
         timeout: u64,
+
+        /// Maximum number of concurrent connection attempts
+        #[arg(short = 'c', long, value_name = "N", default_value_t = 256)]
+        concurrency: usize,
     },
     /// Address scanning command
     #[command(name = "as", about = "Start address scanning")]
@@ -82,5 +89,21 @@ pub enum Args {
         /// Connection timeout in milliseconds
         #[arg(long, value_name = "MS", default_value_t = 2000)]
         timeout: u64,
+
+        /// Maximum number of concurrent connection attempts
+        #[arg(short = 'c', long, value_name = "N", default_value_t = 256)]
+        concurrency: usize,
     },
+}
+
+impl Args {
+    /// The requested maximum number of concurrent connection attempts,
+    /// regardless of which subcommand was invoked.
+    pub fn concurrency(&self) -> usize {
+        match self {
+            Args::PortScan { concurrency, .. } | Args::AddressScan { concurrency, .. } => {
+                *concurrency
+            }
+        }
+    }
 }

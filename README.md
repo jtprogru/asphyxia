@@ -20,7 +20,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Address scanning** — check a single IP, scan an IP range, or scan an entire subnet (CIDR).
 - **IPv4 and IPv6** — every scan mode accepts both address families.
 - **Configurable timeout** — tune the per-connection timeout with `--timeout`.
-- **Parallel execution** — scans run concurrently via [rayon](https://crates.io/crates/rayon).
+- **Parallel execution** — scans run concurrently via [rayon](https://crates.io/crates/rayon), with tunable concurrency (`--concurrency`) for large subnet scans.
 - **Live progress bars** — long-running scans show real-time progress.
 - **Colorized output** — readable, colored terminal output.
 
@@ -105,6 +105,7 @@ asphyxia ps -t 2001:db8::1 -s 22,80,443 --timeout 500
 | `-r, --range <START> <END>` | Scan an inclusive range of ports |
 | `-s, --specific <PORTS>` | Scan specific comma-separated ports |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
+| `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 
 ### Address scanning (`as`)
 
@@ -130,8 +131,20 @@ asphyxia as -s 192.168.1.0/24 --timeout 300
 | `-t, --target <IP>` | Scan a single IPv4 or IPv6 address |
 | `-r, --range <START> <END>` | Scan an inclusive range of IPs (start and end must share the same family) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
+| `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 
 > Host availability is inferred from a TCP probe: a host counts as up when it either accepts the connection or actively refuses it (a closed port still proves the host answered). A host that times out or is unreachable is reported as down — so a live host behind a firewall that silently drops packets may appear offline. This is an unprivileged, best-effort check, not an ICMP ping.
+
+## Performance
+
+Scanning is network-I/O-bound — most of the time is spent waiting for TCP handshakes and timeouts, not using the CPU. Asphyxia therefore runs many more concurrent probes than there are CPU cores (256 by default), so an unresponsive address (which blocks for the full `--timeout`) does not stall the rest of the scan.
+
+To tune a scan:
+
+- **`--concurrency`** — raise it to finish large subnets faster (e.g. `--concurrency 512` for a `/22`); lower it if you want a gentler scan. Capped at 1024.
+- **`--timeout`** — on a responsive LAN a shorter timeout (e.g. `--timeout 500`) makes unreachable hosts give up much sooner.
+
+For example, a `/24` with the defaults completes in roughly one timeout window instead of serially walking every address.
 
 ## Dependencies
 

@@ -94,3 +94,22 @@ fn address_scan_rejects_invalid_subnet() {
         .success()
         .stderr(predicate::str::contains("Invalid subnet format"));
 }
+
+#[test]
+fn concurrency_flag_is_accepted() {
+    // The flag should parse on both subcommands; a bad subnet keeps the scan
+    // off the network so the test stays fast and deterministic.
+    asphyxia()
+        .args(["as", "-s", "192.168.1.0/33", "--concurrency", "64"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Invalid subnet format"));
+}
+
+#[test]
+fn concurrency_flag_rejects_non_numeric() {
+    asphyxia()
+        .args(["as", "-s", "192.168.1.0/24", "--concurrency", "lots"])
+        .assert()
+        .failure();
+}

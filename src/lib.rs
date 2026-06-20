@@ -97,4 +97,4 @@ pub mod utils;
 pub use scanner::address::{scan_address, scan_ip_range, scan_subnet};
 /// Re-export commonly used types and functions
 pub use scanner::port::{is_resolvable, resolve_host, scan_port};
-pub use utils::{parse_ip, parse_ports, parse_subnet, progress_bar};
+pub use utils::{init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar};

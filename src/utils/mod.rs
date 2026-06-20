@@ -2,6 +2,36 @@ use indicatif::{ProgressBar, ProgressStyle};
 use ipnetwork::IpNetwork;
 use std::net::IpAddr;
 
+/// Hard upper bound on the number of concurrent connection attempts.
+///
+/// A `--concurrency` value larger than this is clamped down so that a single
+/// scan cannot spawn an unreasonable number of OS threads.
+pub const MAX_CONCURRENCY: usize = 1024;
+
+/// Configure the global rayon thread pool used by every scan.
+///
+/// Scanning is network-I/O-bound: each probe spends almost all of its time
+/// parked on a blocking `connect` waiting for a handshake or a timeout, not on
+/// the CPU. So we deliberately run far more concurrent probes than there are
+/// cores — the default rayon pool (sized to the core count) would otherwise
+/// leave most addresses waiting behind a handful of busy threads. Pool threads
+/// get a small stack because a connection probe needs almost none.
+///
+/// `concurrency` is clamped to `1..=`[`MAX_CONCURRENCY`]. This installs the
+/// process-wide global pool, so it must be called once, before any scan runs.
+///
+/// # Panics
+///
+/// Panics if the global pool has already been initialised (e.g. called twice).
+pub fn init_scan_pool(concurrency: usize) {
+    let threads = concurrency.clamp(1, MAX_CONCURRENCY);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .stack_size(512 * 1024)
+        .build_global()
+        .expect("failed to initialise the scan thread pool");
+}
+
 /// Build a styled progress bar for a scan of `total` items.
 ///
 /// The `suffix` is appended after the `pos/len` counter (e.g. `"ports scanned"`
