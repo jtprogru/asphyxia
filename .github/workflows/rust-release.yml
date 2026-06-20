@@ -10,30 +10,20 @@ permissions:
 
 jobs:
   build-and-release:
+    name: Build ${{ matrix.rust_target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            arch: x86_64
             rust_target: x86_64-unknown-linux-gnu
-          # - os: ubuntu-latest
-          #   arch: arm64
-          #   rust_target: aarch64-unknown-linux-gnu
-          - os: macos-latest
-            arch: x86_64
+          - os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+          - os: macos-13
             rust_target: x86_64-apple-darwin
           - os: macos-latest
-            arch: arm64
             rust_target: aarch64-apple-darwin
-          # - os: windows-latest
-          #   arch: x86_64
-          #   rust_target: x86_64-pc-windows-msvc
-          # Если нужно, раскомментируйте для Windows ARM64
-          # - os: windows-latest
-          #   arch: arm64
-          #   rust_target: aarch64-pc-windows-msvc
 
     steps:
       - name: Checkout repository
@@ -45,21 +35,24 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.rust_target }}
 
-      - name: Build project
-        run: |
-          cargo build --release --locked --target ${{ matrix.rust_target }}
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.rust_target }}
 
-      - name: Package binaries
+      - name: Build project
+        run: cargo build --release --locked --target ${{ matrix.rust_target }}
+
+      - name: Package binary
         shell: bash
         run: |
-          mkdir -p release_binaries
-          cp target/${{ matrix.rust_target }}/release/asphyxia release_binaries/
-          chmod +x release_binaries/asphyxia || true
-          cd release_binaries
-          zip ../asphyxia-${{ matrix.rust_target }}.zip asphyxia
-          cd ..
+          archive="asphyxia-${{ matrix.rust_target }}.zip"
+          mkdir -p dist
+          cp "target/${{ matrix.rust_target }}/release/asphyxia" dist/
+          chmod +x dist/asphyxia
+          (cd dist && zip "../$archive" asphyxia)
 
-      - name: Upload binaries as artifacts
+      - name: Upload binary as artifact
         uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.rust_target }}
@@ -75,6 +68,21 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+
+      - name: Sign release archives
+        env:
+          PASSPHRASE: ${{ secrets.PASSPHRASE }}
+        run: |
+          for f in artifacts/asphyxia-*.zip; do
+            gpg --batch --yes --pinentry-mode loopback --passphrase "$PASSPHRASE" \
+              --armor --detach-sign "$f"
+          done
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -82,7 +90,10 @@ jobs:
           name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
-          files: artifacts/asphyxia-*.zip
+          generate_release_notes: true
+          files: |
+            artifacts/asphyxia-*.zip
+            artifacts/asphyxia-*.zip.asc
 
   updatehomebrew:
     needs: create-release
@@ -91,22 +102,37 @@ jobs:
       - name: Checkout brew tap repo
         uses: actions/checkout@v4
         with:
-          repository: jtprogru/homebrew-asphyxia
+          repository: jtprogru/homebrew-tap
           ref: main
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
-      - name: Download macOS artifacts
+      - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+
       - name: Generate Formula
         run: |
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
-          SHA_X86_64=$(sha256sum artifacts/asphyxia-x86_64-apple-darwin.zip | awk '{print $1}')
-          SHA_ARM64=$(sha256sum artifacts/asphyxia-aarch64-apple-darwin.zip | awk '{print $1}')
+
+          sha() { sha256sum "artifacts/$1" | awk '{print $1}'; }
+          url() { echo "https://github.com/jtprogru/asphyxia/releases/download/${TAG}/$1"; }
+
+          MAC_X86="asphyxia-x86_64-apple-darwin.zip"
+          MAC_ARM="asphyxia-aarch64-apple-darwin.zip"
+          LINUX_X86="asphyxia-x86_64-unknown-linux-gnu.zip"
+          LINUX_ARM="asphyxia-aarch64-unknown-linux-gnu.zip"
+
           mkdir -p Formula
           cat <<EOL > Formula/asphyxia.rb
           class Asphyxia < Formula
@@ -114,13 +140,26 @@ jobs:
             homepage "https://github.com/jtprogru/asphyxia"
             version "${VERSION}"
 
-            if OS.mac? && Hardware::CPU.intel?
-              url "https://github.com/jtprogru/asphyxia/releases/download/${TAG}/asphyxia-x86_64-apple-darwin.zip"
-              sha256 "${SHA_X86_64}"
+            on_macos do
+              on_intel do
+                url "$(url "$MAC_X86")"
+                sha256 "$(sha "$MAC_X86")"
+              end
+              on_arm do
+                url "$(url "$MAC_ARM")"
+                sha256 "$(sha "$MAC_ARM")"
+              end
             end
-            if OS.mac? && Hardware::CPU.arm?
-              url "https://github.com/jtprogru/asphyxia/releases/download/${TAG}/asphyxia-aarch64-apple-darwin.zip"
-              sha256 "${SHA_ARM64}"
+
+            on_linux do
+              on_intel do
+                url "$(url "$LINUX_X86")"
+                sha256 "$(sha "$LINUX_X86")"
+              end
+              on_arm do
+                url "$(url "$LINUX_ARM")"
+                sha256 "$(sha "$LINUX_ARM")"
+              end
             end
 
             def install
@@ -129,10 +168,12 @@ jobs:
           end
           EOL
 
+          echo "----- Generated Formula/asphyxia.rb -----"
+          cat Formula/asphyxia.rb
+
       - name: Commit and push formula
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          # Identity and commit signing are configured by the import-gpg step.
           git add Formula/asphyxia.rb
-          git commit -m "Update asphyxia to ${GITHUB_REF_NAME}" || echo "No changes to commit"
+          git commit -S -m "Update asphyxia to ${GITHUB_REF_NAME}" || echo "No changes to commit"
           git push origin main

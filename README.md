@@ -1,66 +1,126 @@
 # Asphyxia
 
+[![CI](https://github.com/jtprogru/asphyxia/actions/workflows/ci.yml/badge.svg)](https://github.com/jtprogru/asphyxia/actions/workflows/ci.yml)
 [![Rust Release](https://github.com/jtprogru/asphyxia/actions/workflows/rust-release.yml/badge.svg)](https://github.com/jtprogru/asphyxia/actions/workflows/rust-release.yml)
 
-A powerful network utility tool written in Rust.
+A fast and efficient network scanner written in Rust.
 
 ## Description
 
-Asphyxia is a command-line network utility tool that provides efficient network operations and analysis capabilities. Built with performance and reliability in mind, it leverages Rust's powerful features to deliver fast and secure network operations.
+Asphyxia is a command-line network scanner that helps you discover open ports on a host and find reachable hosts on a network. It runs scans in parallel for speed and shows live progress while it works.
 
 ## Features
 
-- Command-line interface with intuitive argument parsing
-- Parallel processing capabilities
-- Progress indication for long-running operations
-- Network address handling and manipulation
-- Colorized terminal output
+- **Port scanning** — scan a range of ports or a specific comma-separated list on a target host.
+- **Address scanning** — check a single IP, scan an IP range, or scan an entire subnet (CIDR).
+- **Parallel execution** — scans run concurrently via [rayon](https://crates.io/crates/rayon).
+- **Live progress bars** — long-running scans show real-time progress.
+- **Colorized output** — readable, colored terminal output.
+
+> Note: Asphyxia currently works with IPv4 targets.
 
 ## Installation
 
-### Prerequisites
+### Homebrew (macOS & Linux)
 
-- Rust and Cargo (latest stable version recommended)
-- Git
+```bash
+brew tap jtprogru/tap
+brew install jtprogru/tap/asphyxia
+```
 
-### Building from Source
+The formula is published automatically to the [jtprogru/homebrew-tap](https://github.com/jtprogru/homebrew-tap) tap on every release and supports macOS (Intel & Apple Silicon) and Linux (x86_64 & arm64).
 
-1. Clone the repository:
+### Prebuilt binaries
 
-    ```bash
-    git clone https://github.com/jtprogru/asphyxia.git
-    cd asphyxia
-    ```
+Download the archive for your platform from the [latest release](https://github.com/jtprogru/asphyxia/releases/latest), unzip it, and place the `asphyxia` binary somewhere on your `PATH`. Builds are provided for:
 
-2. Build the project:
+- Linux: `x86_64`, `aarch64`
+- macOS: `x86_64`, `aarch64` (Apple Silicon)
 
-    ```bash
-    cargo build --release
-    ```
+Each archive is shipped with a detached GPG signature (`.asc`). After importing the signing key you can verify an archive with:
 
-The compiled binary will be available at `target/release/asphyxia`
+```bash
+gpg --verify asphyxia-<target>.zip.asc asphyxia-<target>.zip
+```
+
+### Building from source
+
+Requires a recent stable Rust toolchain (the project uses the 2024 edition).
+
+```bash
+git clone https://github.com/jtprogru/asphyxia.git
+cd asphyxia
+cargo build --release
+```
+
+The compiled binary will be available at `target/release/asphyxia`.
 
 ## Usage
 
-```bash
-# Basic usage
-./target/release/asphyxia [OPTIONS]
+Asphyxia exposes two subcommands: `ps` (port scan) and `as` (address scan).
 
-# For more information
-./target/release/asphyxia --help
+```bash
+asphyxia --help        # general help
+asphyxia ps --help     # port scan options
+asphyxia as --help     # address scan options
 ```
+
+### Port scanning (`ps`)
+
+```bash
+# Scan a range of ports (start end)
+asphyxia ps -t example.com -r 80 443
+
+# Scan specific ports (comma-separated)
+asphyxia ps -t example.com -s 22,80,443,8080
+```
+
+| Flag | Description |
+|------|-------------|
+| `-t, --host <HOST>` | Target host (hostname or IP) |
+| `-r, --range <START> <END>` | Scan an inclusive range of ports |
+| `-s, --specific <PORTS>` | Scan specific comma-separated ports |
+
+### Address scanning (`as`)
+
+```bash
+# Scan a subnet in CIDR notation
+asphyxia as -s 192.168.1.0/24
+
+# Scan a single IP address
+asphyxia as -t 192.168.1.1
+
+# Scan a range of IP addresses (start end)
+asphyxia as -r 192.168.1.1 192.168.1.20
+```
+
+| Flag | Description |
+|------|-------------|
+| `-s, --subnet <SUBNET>` | Scan a subnet, e.g. `192.168.1.0/24` |
+| `-t, --target <IP>` | Scan a single IPv4 address |
+| `-r, --range <START> <END>` | Scan an inclusive range of IPv4 addresses |
 
 ## Dependencies
 
-- [clap](https://crates.io/crates/clap) - Command line argument parsing
-- [rayon](https://crates.io/crates/rayon) - Parallel computing
-- [indicatif](https://crates.io/crates/indicatif) - Progress bars and spinners
-- [owo-colors](https://crates.io/crates/owo-colors) - Terminal colors
-- [ipnetwork](https://crates.io/crates/ipnetwork) - IP network address handling
+- [clap](https://crates.io/crates/clap) — command-line argument parsing
+- [rayon](https://crates.io/crates/rayon) — parallel computing
+- [indicatif](https://crates.io/crates/indicatif) — progress bars and spinners
+- [owo-colors](https://crates.io/crates/owo-colors) — terminal colors
+- [ipnetwork](https://crates.io/crates/ipnetwork) — IP network address handling
+
+## Development
+
+```bash
+cargo fmt --all          # format
+cargo clippy --all-targets -- -D warnings   # lint
+cargo test               # run unit and doc tests
+```
+
+CI runs formatting, Clippy (warnings denied), build, and tests on every pull request and push to `main`.
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the [MIT License](LICENSE).
 
 ## Contributing
 
