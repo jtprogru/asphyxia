@@ -6,5 +6,5 @@
 //! * `port` - Port scanning functionality
 //! * `address` - Address scanning functionality
 
-pub mod port;
 pub mod address;
+pub mod port;

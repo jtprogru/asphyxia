@@ -1,25 +1,29 @@
-use std::net::{Ipv4Addr};
-use std::time::Duration;
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use owo_colors::OwoColorize;
+use rayon::prelude::*;
 
 mod cli;
 mod scanner;
 mod utils;
 
 use cli::Args;
-use scanner::{port, address};
+use scanner::{address, port};
 use utils::{parse_ipv4, parse_subnet};
 
 fn main() {
     let args = Args::parse();
 
     match args {
-        Args::PortScan { host, range, specific } => {
+        Args::PortScan {
+            host,
+            range,
+            specific,
+        } => {
             // Check if host is online
             if !port::is_online(&host) {
                 eprintln!("{}", format!("Server/Host: {} is not up!", host).red());
@@ -27,10 +31,7 @@ fn main() {
             }
 
             let ports: Vec<u16> = if let Some(range) = range {
-                if range.len() != 2 {
-                    eprintln!("{}", "Range requires two numbers".yellow());
-                    return;
-                }
+                // clap enforces exactly two values via `num_args = 2`.
                 let start = range[0];
                 let end = range[1];
                 if start > end {
@@ -43,6 +44,16 @@ fn main() {
             } else {
                 eprintln!("{}", "Please specify either -r or -s".yellow());
                 return;
+            };
+
+            // Resolve the host to an IP once, so the parallel scan below does
+            // not issue a DNS lookup for every single port.
+            let scan_host = match port::resolve_host(&host) {
+                Some(ip) => ip.to_string(),
+                None => {
+                    eprintln!("{}", format!("Could not resolve host: {}", host).red());
+                    return;
+                }
             };
 
             let total_ports = ports.len();
@@ -66,10 +77,10 @@ fn main() {
             let opened_ports = Arc::new(Mutex::new(Vec::new()));
 
             ports.into_par_iter().for_each(|port| {
-                if let Some(open_port) = port::scan_port(host.clone(), port) {
-                    if let Ok(mut guard) = opened_ports.lock() {
-                        guard.push(open_port);
-                    }
+                if let Some(open_port) = port::scan_port(scan_host.clone(), port)
+                    && let Ok(mut guard) = opened_ports.lock()
+                {
+                    guard.push(open_port);
                 }
                 pb.inc(1);
             });
@@ -80,7 +91,11 @@ fn main() {
             opened.sort();
 
             if !opened.is_empty() {
-                println!("\n-- {} for {} --\n", "Opened ports".green(), host.bright_yellow());
+                println!(
+                    "\n-- {} for {} --\n",
+                    "Opened ports".green(),
+                    host.bright_yellow()
+                );
                 for port in &*opened {
                     println!("{}:{}", host.bright_cyan(), port.to_string().bright_green());
                 }
@@ -90,7 +105,11 @@ fn main() {
 
             println!("\n##### {} #####\n", "Game Over".bright_red());
         }
-        Args::AddressScan { subnet, target, range } => {
+        Args::AddressScan {
+            subnet,
+            target,
+            range,
+        } => {
             let available_ips: Vec<Ipv4Addr> = if let Some(subnet_str) = subnet {
                 match parse_subnet(&subnet_str) {
                     Ok(network) => {
@@ -122,10 +141,7 @@ fn main() {
                     }
                 }
             } else if let Some(range_vec) = range {
-                if range_vec.len() != 2 {
-                    eprintln!("{}", "Range requires two IP addresses".yellow());
-                    return;
-                }
+                // clap enforces exactly two values via `num_args = 2`.
                 match (parse_ipv4(&range_vec[0]), parse_ipv4(&range_vec[1])) {
                     (Ok(start), Ok(end)) => {
                         println!(
@@ -159,4 +175,3 @@ fn main() {
         }
     }
 }
-

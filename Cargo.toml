@@ -5,6 +5,13 @@ edition = "2024"
 authors = [
     "Mikhail Savin <jtprogru@gmail.com>"
 ]
+description = "A fast and efficient network scanner written in Rust"
+license = "MIT"
+repository = "https://github.com/jtprogru/asphyxia"
+homepage = "https://github.com/jtprogru/asphyxia"
+readme = "README.md"
+keywords = ["network", "scanner", "port", "cli", "security"]
+categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 clap = { version="4.5.40", features = ["derive"] }
