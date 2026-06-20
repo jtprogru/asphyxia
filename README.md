@@ -2,6 +2,11 @@
 
 [![CI](https://github.com/jtprogru/asphyxia/actions/workflows/ci.yml/badge.svg)](https://github.com/jtprogru/asphyxia/actions/workflows/ci.yml)
 [![Rust Release](https://github.com/jtprogru/asphyxia/actions/workflows/rust-release.yml/badge.svg)](https://github.com/jtprogru/asphyxia/actions/workflows/rust-release.yml)
+[![crates.io](https://img.shields.io/crates/v/asphyxia.svg)](https://crates.io/crates/asphyxia)
+[![docs.rs](https://img.shields.io/docsrs/asphyxia)](https://docs.rs/asphyxia)
+[![Downloads](https://img.shields.io/crates/d/asphyxia.svg)](https://crates.io/crates/asphyxia)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://www.rust-lang.org)
+[![License: MIT](https://img.shields.io/crates/l/asphyxia.svg)](LICENSE)
 
 A fast and efficient network scanner written in Rust.
 
@@ -13,11 +18,13 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 
 - **Port scanning** — scan a range of ports or a specific comma-separated list on a target host.
 - **Address scanning** — check a single IP, scan an IP range, or scan an entire subnet (CIDR).
+- **IPv4 and IPv6** — every scan mode accepts both address families.
+- **Configurable timeout** — tune the per-connection timeout with `--timeout`.
 - **Parallel execution** — scans run concurrently via [rayon](https://crates.io/crates/rayon).
 - **Live progress bars** — long-running scans show real-time progress.
 - **Colorized output** — readable, colored terminal output.
 
-> Note: Asphyxia currently works with IPv4 targets.
+> Note: IPv6 subnet and range scans are capped at 65 536 addresses (e.g. a `/112`), since larger IPv6 spaces are impractical to walk exhaustively.
 
 ## Installation
 
@@ -59,7 +66,7 @@ gpg --verify asphyxia-<target>.zip.asc asphyxia-<target>.zip
 
 ### Building from source
 
-Requires a recent stable Rust toolchain (the project uses the 2024 edition).
+Requires Rust 1.88 or newer (the project uses the 2024 edition).
 
 ```bash
 git clone https://github.com/jtprogru/asphyxia.git
@@ -87,32 +94,42 @@ asphyxia ps -t example.com -r 80 443
 
 # Scan specific ports (comma-separated)
 asphyxia ps -t example.com -s 22,80,443,8080
+
+# Scan an IPv6 host with a shorter timeout
+asphyxia ps -t 2001:db8::1 -s 22,80,443 --timeout 500
 ```
 
 | Flag | Description |
 |------|-------------|
-| `-t, --host <HOST>` | Target host (hostname or IP) |
+| `-t, --host <HOST>` | Target host (hostname, IPv4, or IPv6) |
 | `-r, --range <START> <END>` | Scan an inclusive range of ports |
 | `-s, --specific <PORTS>` | Scan specific comma-separated ports |
+| `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 
 ### Address scanning (`as`)
 
 ```bash
-# Scan a subnet in CIDR notation
+# Scan a subnet in CIDR notation (IPv4 or IPv6)
 asphyxia as -s 192.168.1.0/24
+asphyxia as -s 2001:db8::/120
 
-# Scan a single IP address
+# Scan a single IP address (IPv4 or IPv6)
 asphyxia as -t 192.168.1.1
+asphyxia as -t 2001:db8::1
 
 # Scan a range of IP addresses (start end)
 asphyxia as -r 192.168.1.1 192.168.1.20
+
+# Scan a subnet with a custom timeout
+asphyxia as -s 192.168.1.0/24 --timeout 300
 ```
 
 | Flag | Description |
 |------|-------------|
-| `-s, --subnet <SUBNET>` | Scan a subnet, e.g. `192.168.1.0/24` |
-| `-t, --target <IP>` | Scan a single IPv4 address |
-| `-r, --range <START> <END>` | Scan an inclusive range of IPv4 addresses |
+| `-s, --subnet <SUBNET>` | Scan a subnet, e.g. `192.168.1.0/24` or `2001:db8::/120` |
+| `-t, --target <IP>` | Scan a single IPv4 or IPv6 address |
+| `-r, --range <START> <END>` | Scan an inclusive range of IPs (start and end must share the same family) |
+| `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 
 ## Dependencies
 
