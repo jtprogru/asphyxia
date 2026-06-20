@@ -57,8 +57,8 @@ pub enum Args {
         range: Option<Vec<u16>>,
 
         /// Scan specific ports separated by comma
-        #[arg(short = 's', long, value_parser = crate::utils::parse_ports, group = "ports")]
-        specific: Option<Vec<u16>>,
+        #[arg(short = 's', long, group = "ports")]
+        specific: Option<String>,
 
         /// Connection timeout in milliseconds
         #[arg(long, value_name = "MS", default_value_t = 2000)]

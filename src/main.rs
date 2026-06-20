@@ -12,7 +12,7 @@ mod utils;
 
 use cli::Args;
 use scanner::{address, port};
-use utils::{parse_ip, parse_subnet, progress_bar};
+use utils::{parse_ip, parse_ports, parse_subnet, progress_bar};
 
 fn main() {
     let args = Args::parse();
@@ -41,8 +41,14 @@ fn main() {
                     return;
                 }
                 (start..=end).collect()
-            } else if let Some(ports) = specific {
-                ports
+            } else if let Some(spec) = specific {
+                match parse_ports(&spec) {
+                    Ok(ports) => ports,
+                    Err(e) => {
+                        eprintln!("{}", e.red());
+                        return;
+                    }
+                }
             } else {
                 eprintln!("{}", "Please specify either -r or -s".yellow());
                 return;
