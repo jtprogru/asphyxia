@@ -68,6 +68,21 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+
+      - name: Sign release archives
+        env:
+          PASSPHRASE: ${{ secrets.PASSPHRASE }}
+        run: |
+          for f in artifacts/asphyxia-*.zip; do
+            gpg --batch --yes --pinentry-mode loopback --passphrase "$PASSPHRASE" \
+              --armor --detach-sign "$f"
+          done
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -76,7 +91,9 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          files: artifacts/asphyxia-*.zip
+          files: |
+            artifacts/asphyxia-*.zip
+            artifacts/asphyxia-*.zip.asc
 
   updatehomebrew:
     needs: create-release
@@ -85,7 +102,7 @@ jobs:
       - name: Checkout brew tap repo
         uses: actions/checkout@v4
         with:
-          repository: jtprogru/homebrew-asphyxia
+          repository: jtprogru/homebrew-tap
           ref: main
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
@@ -94,6 +111,14 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
 
       - name: Generate Formula
         run: |
@@ -148,8 +173,7 @@ jobs:
 
       - name: Commit and push formula
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          # Identity and commit signing are configured by the import-gpg step.
           git add Formula/asphyxia.rb
-          git commit -m "Update asphyxia to ${GITHUB_REF_NAME}" || echo "No changes to commit"
+          git commit -S -m "Update asphyxia to ${GITHUB_REF_NAME}" || echo "No changes to commit"
           git push origin main

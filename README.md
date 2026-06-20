@@ -24,11 +24,11 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 ### Homebrew (macOS & Linux)
 
 ```bash
-brew tap jtprogru/asphyxia
-brew install jtprogru/asphyxia/asphyxia
+brew tap jtprogru/tap
+brew install jtprogru/tap/asphyxia
 ```
 
-The formula is published automatically to the [jtprogru/homebrew-asphyxia](https://github.com/jtprogru/homebrew-asphyxia) tap on every release and supports macOS (Intel & Apple Silicon) and Linux (x86_64 & arm64).
+The formula is published automatically to the [jtprogru/homebrew-tap](https://github.com/jtprogru/homebrew-tap) tap on every release and supports macOS (Intel & Apple Silicon) and Linux (x86_64 & arm64).
 
 ### Prebuilt binaries
 
@@ -36,6 +36,12 @@ Download the archive for your platform from the [latest release](https://github.
 
 - Linux: `x86_64`, `aarch64`
 - macOS: `x86_64`, `aarch64` (Apple Silicon)
+
+Each archive is shipped with a detached GPG signature (`.asc`). After importing the signing key you can verify an archive with:
+
+```bash
+gpg --verify asphyxia-<target>.zip.asc asphyxia-<target>.zip
+```
 
 ### Building from source
 
