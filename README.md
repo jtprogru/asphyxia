@@ -28,14 +28,14 @@ brew tap jtprogru/tap
 brew install jtprogru/tap/asphyxia
 ```
 
-The formula is published automatically to the [jtprogru/homebrew-tap](https://github.com/jtprogru/homebrew-tap) tap on every release and supports macOS (Intel & Apple Silicon) and Linux (x86_64 & arm64).
+The formula is published automatically to the [jtprogru/homebrew-tap](https://github.com/jtprogru/homebrew-tap) tap on every release and supports macOS (Apple Silicon) and Linux (x86_64 & arm64).
 
 ### Prebuilt binaries
 
 Download the archive for your platform from the [latest release](https://github.com/jtprogru/asphyxia/releases/latest), unzip it, and place the `asphyxia` binary somewhere on your `PATH`. Builds are provided for:
 
 - Linux: `x86_64`, `aarch64`
-- macOS: `x86_64`, `aarch64` (Apple Silicon)
+- macOS: `aarch64` (Apple Silicon)
 
 Each archive is shipped with a detached GPG signature (`.asc`). After importing the signing key you can verify an archive with:
 

@@ -20,8 +20,6 @@ jobs:
             rust_target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
-          - os: macos-13
-            rust_target: x86_64-apple-darwin
           - os: macos-latest
             rust_target: aarch64-apple-darwin
 
@@ -128,7 +126,6 @@ jobs:
           sha() { sha256sum "artifacts/$1" | awk '{print $1}'; }
           url() { echo "https://github.com/jtprogru/asphyxia/releases/download/${TAG}/$1"; }
 
-          MAC_X86="asphyxia-x86_64-apple-darwin.zip"
           MAC_ARM="asphyxia-aarch64-apple-darwin.zip"
           LINUX_X86="asphyxia-x86_64-unknown-linux-gnu.zip"
           LINUX_ARM="asphyxia-aarch64-unknown-linux-gnu.zip"
@@ -141,10 +138,6 @@ jobs:
             version "${VERSION}"
 
             on_macos do
-              on_intel do
-                url "$(url "$MAC_X86")"
-                sha256 "$(sha "$MAC_X86")"
-              end
               on_arm do
                 url "$(url "$MAC_ARM")"
                 sha256 "$(sha "$MAC_ARM")"
