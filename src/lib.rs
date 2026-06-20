@@ -94,7 +94,7 @@ pub mod cli;
 pub mod scanner;
 pub mod utils;
 
+pub use scanner::address::{scan_address, scan_ip_range, scan_subnet};
 /// Re-export commonly used types and functions
-pub use scanner::port::{scan_port, is_online};
-pub use scanner::address::{scan_address, scan_subnet, scan_ip_range};
-pub use utils::{parse_ports, parse_ipv4, parse_subnet};
+pub use scanner::port::{is_online, resolve_host, scan_port};
+pub use utils::{parse_ipv4, parse_ports, parse_subnet};

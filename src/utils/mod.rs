@@ -1,5 +1,5 @@
-use std::net::Ipv4Addr;
 use ipnetwork::IpNetwork;
+use std::net::Ipv4Addr;
 
 /// Parse a comma-separated string of port numbers into a vector of u16
 ///
@@ -22,7 +22,10 @@ use ipnetwork::IpNetwork;
 /// ```
 pub fn parse_ports(s: &str) -> Result<Vec<u16>, String> {
     s.split(',')
-        .map(|p| p.parse::<u16>().map_err(|_| format!("Invalid port number: {}", p)))
+        .map(|p| {
+            p.parse::<u16>()
+                .map_err(|_| format!("Invalid port number: {}", p))
+        })
         .collect()
 }
 
@@ -71,7 +74,8 @@ pub fn parse_ipv4(ip: &str) -> Result<Ipv4Addr, String> {
 /// assert!(parse_subnet("2001:db8::/32").is_err()); // IPv6 not supported
 /// ```
 pub fn parse_subnet(subnet: &str) -> Result<IpNetwork, String> {
-    subnet.parse::<IpNetwork>()
+    subnet
+        .parse::<IpNetwork>()
         .map_err(|_| format!("Invalid subnet format: {}", subnet))
         .and_then(|network| {
             if network.is_ipv4() {

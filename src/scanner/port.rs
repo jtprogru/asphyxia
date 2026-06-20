@@ -1,7 +1,41 @@
-use std::net::{TcpStream, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-/// Check if a host is online by attempting to connect to port 80
+/// Default timeout for a single TCP connection attempt.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Resolve a host (numeric IP or DNS name) to its first IP address.
+///
+/// # Arguments
+///
+/// * `host` - The hostname or IP address to resolve
+///
+/// # Returns
+///
+/// * `Option<IpAddr>` - The first resolved address, or `None` if resolution fails
+///
+/// # Examples
+///
+/// ```
+/// use asphyxia::scanner::port::resolve_host;
+///
+/// assert!(resolve_host("127.0.0.1").is_some());
+/// assert!(resolve_host("").is_none());
+/// ```
+pub fn resolve_host(host: &str) -> Option<IpAddr> {
+    format!("{}:80", host)
+        .to_socket_addrs()
+        .ok()?
+        .next()
+        .map(|addr| addr.ip())
+}
+
+/// Check whether a host is reachable for scanning.
+///
+/// The host is resolved via DNS (numeric IPs and hostnames are both accepted).
+/// A host that resolves to at least one address is considered scannable — note
+/// that a closed port 80 does not make a host "offline", since the whole point
+/// of port scanning is to probe hosts whose open ports are unknown.
 ///
 /// # Arguments
 ///
@@ -9,7 +43,7 @@ use std::time::Duration;
 ///
 /// # Returns
 ///
-/// * `bool` - `true` if the host is online, `false` otherwise
+/// * `bool` - `true` if the host resolves to at least one address, `false` otherwise
 ///
 /// # Examples
 ///
@@ -17,23 +51,12 @@ use std::time::Duration;
 /// use asphyxia::scanner::port::is_online;
 ///
 /// if is_online("example.com") {
-///     println!("Host is online");
+///     println!("Host is reachable");
 /// }
 /// ```
 pub fn is_online(host: &str) -> bool {
-    match format!("{}:80", host).parse::<SocketAddr>() {
-        Ok(addr) => {
-            if TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
-                return true;
-            }
-
-            match host.to_string().to_socket_addrs() {
-                Ok(mut iter) => iter.next().is_some(),
-                Err(_) => false,
-            }
-        }
-        Err(_) => false,
-    }
+    // A host that resolves to at least one address is considered scannable.
+    resolve_host(host).is_some()
 }
 
 /// Scan a specific port on a host
@@ -58,17 +81,9 @@ pub fn is_online(host: &str) -> bool {
 /// ```
 pub fn scan_port(host: String, port: u16) -> Option<u16> {
     let addr = format!("{}:{}", host, port);
-    match addr.to_socket_addrs() {
-        Ok(mut addrs) => {
-            if let Some(addr) = addrs.next() {
-                match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
-                    Ok(_) => Some(port),
-                    Err(_) => None,
-                }
-            } else {
-                None
-            }
-        }
+    let socket_addr = addr.to_socket_addrs().ok()?.next()?;
+    match TcpStream::connect_timeout(&socket_addr, CONNECT_TIMEOUT) {
+        Ok(_) => Some(port),
         Err(_) => None,
     }
 }
@@ -88,5 +103,17 @@ mod tests {
     fn test_scan_port_failure() {
         let result = scan_port("127.0.0.1".to_string(), 1); // Non-existent port
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_is_online_numeric_ip() {
+        // A numeric IP always resolves, so it is considered scannable.
+        assert!(is_online("127.0.0.1"));
+    }
+
+    #[test]
+    fn test_is_online_invalid_host() {
+        // An empty host cannot be resolved.
+        assert!(!is_online(""));
     }
 }

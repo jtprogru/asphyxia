@@ -67,5 +67,5 @@ pub enum Args {
         /// Scan a range of IP addresses
         #[arg(short = 'r', long, num_args = 2, group = "scan_type")]
         range: Option<Vec<String>>,
-    }
+    },
 }

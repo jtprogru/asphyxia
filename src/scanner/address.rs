@@ -1,9 +1,9 @@
-use std::net::{TcpStream, SocketAddr, IpAddr, Ipv4Addr};
-use std::time::Duration;
-use std::sync::{Arc, Mutex};
-use ipnetwork::IpNetwork;
 use indicatif::{ProgressBar, ProgressStyle};
+use ipnetwork::IpNetwork;
 use rayon::prelude::*;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Scan a single IP address for availability
 ///
@@ -31,7 +31,7 @@ use rayon::prelude::*;
 pub fn scan_address(ip: Ipv4Addr, timeout: Option<Duration>) -> Option<Ipv4Addr> {
     match TcpStream::connect_timeout(
         &SocketAddr::new(IpAddr::V4(ip), 80),
-        timeout.unwrap_or(Duration::from_secs(1)),
+        timeout.unwrap_or(crate::scanner::port::CONNECT_TIMEOUT),
     ) {
         Ok(_) => Some(ip),
         Err(_) => None,
@@ -80,10 +80,10 @@ pub fn scan_subnet(subnet: IpNetwork) -> Vec<Ipv4Addr> {
             .into_par_iter()
             .for_each(|ip| {
                 let ipv4 = Ipv4Addr::from(ip);
-                if let Some(available_ip) = scan_address(ipv4, None) {
-                    if let Ok(mut guard) = available_ips.lock() {
-                        guard.push(available_ip);
-                    }
+                if let Some(available_ip) = scan_address(ipv4, None)
+                    && let Ok(mut guard) = available_ips.lock()
+                {
+                    guard.push(available_ip);
                 }
                 pb.inc(1);
             });
@@ -139,17 +139,15 @@ pub fn scan_ip_range(start: Ipv4Addr, end: Ipv4Addr) -> Vec<Ipv4Addr> {
 
     let available_ips = Arc::new(Mutex::new(Vec::new()));
 
-    (start_num..=end_num)
-        .into_par_iter()
-        .for_each(|ip| {
-            let ipv4 = Ipv4Addr::from(ip);
-            if let Some(available_ip) = scan_address(ipv4, None) {
-                if let Ok(mut guard) = available_ips.lock() {
-                    guard.push(available_ip);
-                }
-            }
-            pb.inc(1);
-        });
+    (start_num..=end_num).into_par_iter().for_each(|ip| {
+        let ipv4 = Ipv4Addr::from(ip);
+        if let Some(available_ip) = scan_address(ipv4, None)
+            && let Ok(mut guard) = available_ips.lock()
+        {
+            guard.push(available_ip);
+        }
+        pb.inc(1);
+    });
 
     pb.finish_with_message("Range scan completed");
     let mut result = available_ips.lock().unwrap();
@@ -164,7 +162,11 @@ mod tests {
 
     // Helper function to check if localhost is available
     fn is_localhost_available() -> bool {
-        scan_address("127.0.0.1".parse().unwrap(), Some(Duration::from_millis(100))).is_some()
+        scan_address(
+            "127.0.0.1".parse().unwrap(),
+            Some(Duration::from_millis(100)),
+        )
+        .is_some()
     }
 
     #[test]
