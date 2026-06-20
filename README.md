@@ -30,6 +30,20 @@ brew install jtprogru/tap/asphyxia
 
 The formula is published automatically to the [jtprogru/homebrew-tap](https://github.com/jtprogru/homebrew-tap) tap on every release and supports macOS (Apple Silicon) and Linux (x86_64 & arm64).
 
+### Cargo
+
+Install the latest published release from [crates.io](https://crates.io/crates/asphyxia):
+
+```bash
+cargo install asphyxia
+```
+
+Or install the current `main` branch straight from the repository:
+
+```bash
+cargo install --git https://github.com/jtprogru/asphyxia
+```
+
 ### Prebuilt binaries
 
 Download the archive for your platform from the [latest release](https://github.com/jtprogru/asphyxia/releases/latest), unzip it, and place the `asphyxia` binary somewhere on your `PATH`. Builds are provided for:
