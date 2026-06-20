@@ -20,31 +20,31 @@
 //! ## Examples
 //!
 //! ### Basic Port Scanning
-//! ```rust
+//! ```no_run
 //! use asphyxia::{scan_port, scan_address};
 //!
-//! // Scan a single port
-//! if let Some(port) = scan_port("example.com".to_string(), 80) {
+//! // Scan a single port (default timeout)
+//! if let Some(port) = scan_port("example.com".to_string(), 80, None) {
 //!     println!("Port 80 is open");
 //! }
 //!
 //! // Scan multiple ports
 //! let ports = vec![80, 443, 8080];
 //! for port in ports {
-//!     if let Some(_) = scan_port("example.com".to_string(), port) {
+//!     if let Some(_) = scan_port("example.com".to_string(), port, None) {
 //!         println!("Port {} is open", port);
 //!     }
 //! }
 //! ```
 //!
 //! ### Address and Subnet Scanning
-//! ```rust
+//! ```no_run
 //! use asphyxia::{scan_address, scan_subnet, scan_ip_range};
-//! use std::net::Ipv4Addr;
+//! use std::net::IpAddr;
 //! use std::time::Duration;
 //!
-//! // Check if a host is available
-//! let ip = "192.168.1.1".parse::<Ipv4Addr>().unwrap();
+//! // Check if a host is available (IPv4 or IPv6)
+//! let ip: IpAddr = "192.168.1.1".parse().unwrap();
 //! let timeout = Duration::from_secs(1);
 //! if let Some(_) = scan_address(ip, Some(timeout)) {
 //!     println!("Host is available");
@@ -52,26 +52,26 @@
 //!
 //! // Scan a subnet
 //! let subnet = "192.168.1.0/24".parse().unwrap();
-//! let available_hosts = scan_subnet(subnet);
+//! let available_hosts = scan_subnet(subnet, None);
 //! println!("Found {} available hosts", available_hosts.len());
 //!
 //! // Scan an IP range
-//! let start = "192.168.1.1".parse::<Ipv4Addr>().unwrap();
-//! let end = "192.168.1.10".parse::<Ipv4Addr>().unwrap();
-//! let hosts = scan_ip_range(start, end);
+//! let start: IpAddr = "192.168.1.1".parse().unwrap();
+//! let end: IpAddr = "192.168.1.10".parse().unwrap();
+//! let hosts = scan_ip_range(start, end, None);
 //! println!("Found {} hosts in range", hosts.len());
 //! ```
 //!
 //! ### Using Utility Functions
 //! ```rust
-//! use asphyxia::{parse_ports, parse_ipv4, parse_subnet};
+//! use asphyxia::{parse_ports, parse_ip, parse_subnet};
 //!
 //! // Parse port ranges
 //! let ports = parse_ports("80,443,8000,8080").unwrap();
 //! println!("Ports to scan: {:?}", ports);
 //!
-//! // Parse IP address
-//! let ip = parse_ipv4("192.168.1.1").unwrap();
+//! // Parse IP address (IPv4 or IPv6)
+//! let ip = parse_ip("2001:db8::1").unwrap();
 //! println!("IP address: {}", ip);
 //!
 //! // Parse subnet
@@ -97,4 +97,4 @@ pub mod utils;
 pub use scanner::address::{scan_address, scan_ip_range, scan_subnet};
 /// Re-export commonly used types and functions
 pub use scanner::port::{is_online, resolve_host, scan_port};
-pub use utils::{parse_ipv4, parse_ports, parse_subnet};
+pub use utils::{parse_ip, parse_ports, parse_subnet, progress_bar};

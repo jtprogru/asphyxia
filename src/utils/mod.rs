@@ -1,5 +1,32 @@
+use indicatif::{ProgressBar, ProgressStyle};
 use ipnetwork::IpNetwork;
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
+
+/// Build a styled progress bar for a scan of `total` items.
+///
+/// The `suffix` is appended after the `pos/len` counter (e.g. `"ports scanned"`
+/// or `"addresses scanned"`), so both the port and address scanners can share
+/// the same bar style.
+///
+/// # Examples
+///
+/// ```
+/// use asphyxia::utils::progress_bar;
+///
+/// let pb = progress_bar(100, "ports scanned");
+/// pb.finish_and_clear();
+/// ```
+pub fn progress_bar(total: u64, suffix: &str) -> ProgressBar {
+    let pb = ProgressBar::new(total);
+    pb.set_style(
+        ProgressStyle::with_template(&format!(
+            "[{{elapsed_precise}}] {{bar:40.cyan/blue}} {{pos}}/{{len}} {suffix}"
+        ))
+        .unwrap()
+        .progress_chars("=> "),
+    );
+    pb
+}
 
 /// Parse a comma-separated string of port numbers into a vector of u16
 ///
@@ -29,35 +56,37 @@ pub fn parse_ports(s: &str) -> Result<Vec<u16>, String> {
         .collect()
 }
 
-/// Parse a string into an IPv4 address
+/// Parse a string into an IP address (IPv4 or IPv6)
 ///
 /// # Arguments
 ///
-/// * `ip` - A string containing an IPv4 address
+/// * `ip` - A string containing an IPv4 or IPv6 address
 ///
 /// # Returns
 ///
-/// * `Result<Ipv4Addr, String>` - The parsed IPv4 address if successful,
+/// * `Result<IpAddr, String>` - The parsed IP address if successful,
 ///   or an error message if parsing failed
 ///
 /// # Examples
 ///
 /// ```
-/// use asphyxia::utils::parse_ipv4;
+/// use asphyxia::utils::parse_ip;
 ///
-/// assert!(parse_ipv4("192.168.1.1").is_ok());
-/// assert!(parse_ipv4("256.168.1.1").is_err());
+/// assert!(parse_ip("192.168.1.1").is_ok());
+/// assert!(parse_ip("2001:db8::1").is_ok());
+/// assert!(parse_ip("not-an-ip").is_err());
 /// ```
-pub fn parse_ipv4(ip: &str) -> Result<Ipv4Addr, String> {
-    ip.parse::<Ipv4Addr>()
-        .map_err(|_| format!("Invalid IPv4 address: {}", ip))
+pub fn parse_ip(ip: &str) -> Result<IpAddr, String> {
+    ip.parse::<IpAddr>()
+        .map_err(|_| format!("Invalid IP address: {}", ip))
 }
 
-/// Parse a string into an IPv4 subnet
+/// Parse a string into an IP subnet (IPv4 or IPv6)
 ///
 /// # Arguments
 ///
-/// * `subnet` - A string containing a subnet in CIDR notation (e.g., "192.168.1.0/24")
+/// * `subnet` - A string containing a subnet in CIDR notation
+///   (e.g., "192.168.1.0/24" or "2001:db8::/64")
 ///
 /// # Returns
 ///
@@ -70,18 +99,11 @@ pub fn parse_ipv4(ip: &str) -> Result<Ipv4Addr, String> {
 /// use asphyxia::utils::parse_subnet;
 ///
 /// assert!(parse_subnet("192.168.1.0/24").is_ok());
+/// assert!(parse_subnet("2001:db8::/64").is_ok());
 /// assert!(parse_subnet("192.168.1.0/33").is_err());
-/// assert!(parse_subnet("2001:db8::/32").is_err()); // IPv6 not supported
 /// ```
 pub fn parse_subnet(subnet: &str) -> Result<IpNetwork, String> {
     subnet
         .parse::<IpNetwork>()
         .map_err(|_| format!("Invalid subnet format: {}", subnet))
-        .and_then(|network| {
-            if network.is_ipv4() {
-                Ok(network)
-            } else {
-                Err("Only IPv4 subnets are supported".to_string())
-            }
-        })
 }

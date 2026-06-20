@@ -1,8 +1,18 @@
-use std::net::{IpAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv6Addr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 /// Default timeout for a single TCP connection attempt.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Format a `host:port` authority, wrapping bare IPv6 literals in brackets so
+/// that they round-trip through [`ToSocketAddrs`] (e.g. `[::1]:80`).
+fn host_port(host: &str, port: u16) -> String {
+    if host.parse::<Ipv6Addr>().is_ok() {
+        format!("[{}]:{}", host, port)
+    } else {
+        format!("{}:{}", host, port)
+    }
+}
 
 /// Resolve a host (numeric IP or DNS name) to its first IP address.
 ///
@@ -23,7 +33,7 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// assert!(resolve_host("").is_none());
 /// ```
 pub fn resolve_host(host: &str) -> Option<IpAddr> {
-    format!("{}:80", host)
+    host_port(host, 80)
         .to_socket_addrs()
         .ok()?
         .next()
@@ -47,7 +57,7 @@ pub fn resolve_host(host: &str) -> Option<IpAddr> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use asphyxia::scanner::port::is_online;
 ///
 /// if is_online("example.com") {
@@ -63,8 +73,9 @@ pub fn is_online(host: &str) -> bool {
 ///
 /// # Arguments
 ///
-/// * `host` - The hostname or IP address to scan
+/// * `host` - The hostname or IP address to scan (IPv4 or IPv6)
 /// * `port` - The port number to scan
+/// * `timeout` - Optional connection timeout (defaults to [`CONNECT_TIMEOUT`])
 ///
 /// # Returns
 ///
@@ -72,17 +83,16 @@ pub fn is_online(host: &str) -> bool {
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use asphyxia::scanner::port::scan_port;
 ///
-/// if let Some(port) = scan_port("example.com".to_string(), 80) {
+/// if let Some(port) = scan_port("example.com".to_string(), 80, None) {
 ///     println!("Port {} is open", port);
 /// }
 /// ```
-pub fn scan_port(host: String, port: u16) -> Option<u16> {
-    let addr = format!("{}:{}", host, port);
-    let socket_addr = addr.to_socket_addrs().ok()?.next()?;
-    match TcpStream::connect_timeout(&socket_addr, CONNECT_TIMEOUT) {
+pub fn scan_port(host: String, port: u16, timeout: Option<Duration>) -> Option<u16> {
+    let socket_addr = host_port(&host, port).to_socket_addrs().ok()?.next()?;
+    match TcpStream::connect_timeout(&socket_addr, timeout.unwrap_or(CONNECT_TIMEOUT)) {
         Ok(_) => Some(port),
         Err(_) => None,
     }
@@ -92,16 +102,18 @@ pub fn scan_port(host: String, port: u16) -> Option<u16> {
 mod tests {
     use super::*;
 
+    const TEST_TIMEOUT: Option<Duration> = Some(Duration::from_millis(100));
+
     #[test]
     fn test_scan_port_success() {
         // localhost:0 is always invalid, used only for testing
-        let result = scan_port("127.0.0.1".to_string(), 0);
+        let result = scan_port("127.0.0.1".to_string(), 0, TEST_TIMEOUT);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_scan_port_failure() {
-        let result = scan_port("127.0.0.1".to_string(), 1); // Non-existent port
+        let result = scan_port("127.0.0.1".to_string(), 1, TEST_TIMEOUT); // Non-existent port
         assert!(result.is_none());
     }
 
@@ -115,5 +127,17 @@ mod tests {
     fn test_is_online_invalid_host() {
         // An empty host cannot be resolved.
         assert!(!is_online(""));
+    }
+
+    #[test]
+    fn test_host_port_ipv6_is_bracketed() {
+        assert_eq!(host_port("::1", 80), "[::1]:80");
+        assert_eq!(host_port("2001:db8::1", 443), "[2001:db8::1]:443");
+    }
+
+    #[test]
+    fn test_host_port_ipv4_and_hostname_plain() {
+        assert_eq!(host_port("127.0.0.1", 80), "127.0.0.1:80");
+        assert_eq!(host_port("example.com", 8080), "example.com:8080");
     }
 }

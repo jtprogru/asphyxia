@@ -1,9 +1,8 @@
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
-use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use rayon::prelude::*;
 
@@ -13,7 +12,7 @@ mod utils;
 
 use cli::Args;
 use scanner::{address, port};
-use utils::{parse_ipv4, parse_subnet};
+use utils::{parse_ip, parse_subnet, progress_bar};
 
 fn main() {
     let args = Args::parse();
@@ -23,7 +22,10 @@ fn main() {
             host,
             range,
             specific,
+            timeout,
         } => {
+            let timeout = Some(Duration::from_millis(timeout));
+
             // Check if host is online
             if !port::is_online(&host) {
                 eprintln!("{}", format!("Server/Host: {} is not up!", host).red());
@@ -65,19 +67,12 @@ fn main() {
             );
             std::thread::sleep(Duration::from_secs(1));
 
-            let pb = ProgressBar::new(total_ports as u64);
-            pb.set_style(
-                ProgressStyle::with_template(
-                    "[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ports scanned",
-                )
-                .unwrap()
-                .progress_chars("=> "),
-            );
+            let pb = progress_bar(total_ports as u64, "ports scanned");
 
             let opened_ports = Arc::new(Mutex::new(Vec::new()));
 
             ports.into_par_iter().for_each(|port| {
-                if let Some(open_port) = port::scan_port(scan_host.clone(), port)
+                if let Some(open_port) = port::scan_port(scan_host.clone(), port, timeout)
                     && let Ok(mut guard) = opened_ports.lock()
                 {
                     guard.push(open_port);
@@ -109,8 +104,11 @@ fn main() {
             subnet,
             target,
             range,
+            timeout,
         } => {
-            let available_ips: Vec<Ipv4Addr> = if let Some(subnet_str) = subnet {
+            let timeout = Some(Duration::from_millis(timeout));
+
+            let available_ips: Vec<IpAddr> = if let Some(subnet_str) = subnet {
                 match parse_subnet(&subnet_str) {
                     Ok(network) => {
                         println!(
@@ -118,7 +116,7 @@ fn main() {
                             "Started".bright_blue(),
                             subnet_str.as_str().bright_green()
                         );
-                        address::scan_subnet(network)
+                        address::scan_subnet(network, timeout)
                     }
                     Err(e) => {
                         eprintln!("{}", e.red());
@@ -126,14 +124,14 @@ fn main() {
                     }
                 }
             } else if let Some(target_str) = target {
-                match parse_ipv4(&target_str) {
+                match parse_ip(&target_str) {
                     Ok(ip) => {
                         println!(
                             "\n##### {} scanning target: {} #####\n",
                             "Started".bright_blue(),
                             target_str.as_str().bright_green()
                         );
-                        address::scan_address(ip, None).into_iter().collect()
+                        address::scan_address(ip, timeout).into_iter().collect()
                     }
                     Err(e) => {
                         eprintln!("{}", e.red());
@@ -142,7 +140,7 @@ fn main() {
                 }
             } else if let Some(range_vec) = range {
                 // clap enforces exactly two values via `num_args = 2`.
-                match (parse_ipv4(&range_vec[0]), parse_ipv4(&range_vec[1])) {
+                match (parse_ip(&range_vec[0]), parse_ip(&range_vec[1])) {
                     (Ok(start), Ok(end)) => {
                         println!(
                             "\n##### {} scanning range: {} - {} #####\n",
@@ -150,7 +148,7 @@ fn main() {
                             range_vec[0].as_str().bright_green(),
                             range_vec[1].as_str().bright_green()
                         );
-                        address::scan_ip_range(start, end)
+                        address::scan_ip_range(start, end, timeout)
                     }
                     (Err(e), _) | (_, Err(e)) => {
                         eprintln!("{}", e.red());
