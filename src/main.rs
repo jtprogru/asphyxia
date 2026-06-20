@@ -1,5 +1,4 @@
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
@@ -26,9 +25,9 @@ fn main() {
         } => {
             let timeout = Some(Duration::from_millis(timeout));
 
-            // Check if host is online
-            if !port::is_online(&host) {
-                eprintln!("{}", format!("Server/Host: {} is not up!", host).red());
+            // Make sure the host resolves before we try to scan it.
+            if !port::is_resolvable(&host) {
+                eprintln!("{}", format!("Could not resolve host: {}", host).red());
                 return;
             }
 
@@ -71,24 +70,20 @@ fn main() {
                 "Started".bright_blue(),
                 host.bright_green()
             );
-            std::thread::sleep(Duration::from_secs(1));
 
             let pb = progress_bar(total_ports as u64, "ports scanned");
 
-            let opened_ports = Arc::new(Mutex::new(Vec::new()));
-
-            ports.into_par_iter().for_each(|port| {
-                if let Some(open_port) = port::scan_port(scan_host.clone(), port, timeout)
-                    && let Ok(mut guard) = opened_ports.lock()
-                {
-                    guard.push(open_port);
-                }
-                pb.inc(1);
-            });
+            let mut opened: Vec<u16> = ports
+                .into_par_iter()
+                .filter_map(|port| {
+                    let open_port = port::scan_port(scan_host.clone(), port, timeout);
+                    pb.inc(1);
+                    open_port
+                })
+                .collect();
 
             pb.finish_with_message("Scan completed");
 
-            let mut opened = opened_ports.lock().unwrap();
             opened.sort();
 
             if !opened.is_empty() {
@@ -97,7 +92,7 @@ fn main() {
                     "Opened ports".green(),
                     host.bright_yellow()
                 );
-                for port in &*opened {
+                for port in &opened {
                     println!("{}:{}", host.bright_cyan(), port.to_string().bright_green());
                 }
             } else {

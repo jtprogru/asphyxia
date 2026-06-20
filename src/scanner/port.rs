@@ -40,12 +40,13 @@ pub fn resolve_host(host: &str) -> Option<IpAddr> {
         .map(|addr| addr.ip())
 }
 
-/// Check whether a host is reachable for scanning.
+/// Check whether a host can be resolved to an address.
 ///
-/// The host is resolved via DNS (numeric IPs and hostnames are both accepted).
-/// A host that resolves to at least one address is considered scannable — note
-/// that a closed port 80 does not make a host "offline", since the whole point
-/// of port scanning is to probe hosts whose open ports are unknown.
+/// This is a **name-resolution** check, not a liveness/reachability probe:
+/// numeric IPs always resolve, and a hostname resolves when DNS returns at
+/// least one address. It answers the question "do we have an address to
+/// connect to?", which is the precondition for scanning — whether any
+/// individual port is actually open is decided per-port by [`scan_port`].
 ///
 /// # Arguments
 ///
@@ -58,14 +59,13 @@ pub fn resolve_host(host: &str) -> Option<IpAddr> {
 /// # Examples
 ///
 /// ```no_run
-/// use asphyxia::scanner::port::is_online;
+/// use asphyxia::scanner::port::is_resolvable;
 ///
-/// if is_online("example.com") {
-///     println!("Host is reachable");
+/// if is_resolvable("example.com") {
+///     println!("Host resolves; ready to scan");
 /// }
 /// ```
-pub fn is_online(host: &str) -> bool {
-    // A host that resolves to at least one address is considered scannable.
+pub fn is_resolvable(host: &str) -> bool {
     resolve_host(host).is_some()
 }
 
@@ -118,15 +118,15 @@ mod tests {
     }
 
     #[test]
-    fn test_is_online_numeric_ip() {
+    fn test_is_resolvable_numeric_ip() {
         // A numeric IP always resolves, so it is considered scannable.
-        assert!(is_online("127.0.0.1"));
+        assert!(is_resolvable("127.0.0.1"));
     }
 
     #[test]
-    fn test_is_online_invalid_host() {
+    fn test_is_resolvable_invalid_host() {
         // An empty host cannot be resolved.
-        assert!(!is_online(""));
+        assert!(!is_resolvable(""));
     }
 
     #[test]

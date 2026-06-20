@@ -131,6 +131,8 @@ asphyxia as -s 192.168.1.0/24 --timeout 300
 | `-r, --range <START> <END>` | Scan an inclusive range of IPs (start and end must share the same family) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 
+> Host availability is inferred from a TCP probe: a host counts as up when it either accepts the connection or actively refuses it (a closed port still proves the host answered). A host that times out or is unreachable is reported as down — so a live host behind a firewall that silently drops packets may appear offline. This is an unprivileged, best-effort check, not an ICMP ping.
+
 ## Dependencies
 
 - [clap](https://crates.io/crates/clap) — command-line argument parsing

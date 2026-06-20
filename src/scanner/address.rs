@@ -1,10 +1,16 @@
 use ipnetwork::IpNetwork;
 use rayon::prelude::*;
+use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::utils::progress_bar;
+
+/// TCP port used to probe a host when checking availability.
+///
+/// The port does not need to be open — see [`scan_address`] for how the
+/// connection outcome is interpreted.
+const PROBE_PORT: u16 = 80;
 
 /// Upper bound on the number of addresses enumerated for a single subnet or
 /// range scan when the family is IPv6.
@@ -14,7 +20,19 @@ use crate::utils::progress_bar;
 /// IPv4 scans are not capped — their address space is small enough to walk.
 pub const MAX_IPV6_HOSTS: u128 = 1 << 16; // 65_536 addresses (e.g. a /112)
 
-/// Scan a single IP address for availability
+/// Scan a single IP address for availability.
+///
+/// Availability is inferred from how the host reacts to a TCP probe on
+/// [`PROBE_PORT`] rather than from whether that port happens to be open:
+///
+/// * the connection **succeeds** — the host is up (and the port is open); or
+/// * the connection is **refused/reset** — the host actively answered, so it
+///   is up even though the port is closed.
+///
+/// A timeout, "host unreachable", "network unreachable", or any other error is
+/// treated as down. This is a best-effort, unprivileged check: a live host
+/// behind a firewall that silently *drops* packets (rather than refusing them)
+/// is indistinguishable from one that is offline and will be reported as down.
 ///
 /// # Arguments
 ///
@@ -23,7 +41,7 @@ pub const MAX_IPV6_HOSTS: u128 = 1 << 16; // 65_536 addresses (e.g. a /112)
 ///
 /// # Returns
 ///
-/// * `Option<IpAddr>` - The IP address if it's available, `None` otherwise
+/// * `Option<IpAddr>` - The IP address if the host is up, `None` otherwise
 ///
 /// # Examples
 ///
@@ -34,15 +52,24 @@ pub const MAX_IPV6_HOSTS: u128 = 1 << 16; // 65_536 addresses (e.g. a /112)
 ///
 /// let ip: IpAddr = "192.168.1.1".parse().unwrap();
 /// if let Some(available_ip) = scan_address(ip, Some(Duration::from_millis(500))) {
-///     println!("Host {} is available", available_ip);
+///     println!("Host {} is up", available_ip);
 /// }
 /// ```
 pub fn scan_address(ip: IpAddr, timeout: Option<Duration>) -> Option<IpAddr> {
-    match TcpStream::connect_timeout(
-        &SocketAddr::new(ip, 80),
-        timeout.unwrap_or(crate::scanner::port::CONNECT_TIMEOUT),
-    ) {
+    let timeout = timeout.unwrap_or(crate::scanner::port::CONNECT_TIMEOUT);
+    match TcpStream::connect_timeout(&SocketAddr::new(ip, PROBE_PORT), timeout) {
+        // Port is open: the host is unambiguously up.
         Ok(_) => Some(ip),
+        // The host replied with a reset — it is up, the port is just closed.
+        Err(e)
+            if matches!(
+                e.kind(),
+                ErrorKind::ConnectionRefused | ErrorKind::ConnectionReset
+            ) =>
+        {
+            Some(ip)
+        }
+        // Timeout, unreachable, or anything else: treat the host as down.
         Err(_) => None,
     }
 }
@@ -58,21 +85,18 @@ where
     I: ParallelIterator<Item = IpAddr>,
 {
     let pb = progress_bar(total, "addresses scanned");
-    let available_ips = Arc::new(Mutex::new(Vec::new()));
 
-    addrs.for_each(|ip| {
-        if let Some(available_ip) = scan_address(ip, timeout)
-            && let Ok(mut guard) = available_ips.lock()
-        {
-            guard.push(available_ip);
-        }
-        pb.inc(1);
-    });
+    let mut result: Vec<IpAddr> = addrs
+        .filter_map(|ip| {
+            let available = scan_address(ip, timeout);
+            pb.inc(1);
+            available
+        })
+        .collect();
 
     pb.finish_with_message(finish_msg.to_string());
-    let mut result = available_ips.lock().unwrap();
     result.sort();
-    result.clone()
+    result
 }
 
 /// Scan an entire subnet for available hosts
