@@ -23,6 +23,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Parallel execution** — scans run concurrently via [rayon](https://crates.io/crates/rayon), with tunable concurrency (`--concurrency`) for large subnet scans.
 - **Live progress bars** — long-running scans show real-time progress.
 - **Colorized output** — readable, colored terminal output.
+- **Machine-readable output** — emit results as JSON or JSON Lines with `--output` for piping into other tools.
 
 > Note: IPv6 subnet and range scans are capped at 65 536 addresses (e.g. a `/112`), since larger IPv6 spaces are impractical to walk exhaustively.
 
@@ -106,6 +107,7 @@ asphyxia ps -t 2001:db8::1 -s 22,80,443 --timeout 500
 | `-s, --specific <PORTS>` | Scan specific comma-separated ports |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
+| `-o, --output <FORMAT>` | Output format: `text` (default), `json`, or `jsonl` |
 
 ### Address scanning (`as`)
 
@@ -132,8 +134,28 @@ asphyxia as -s 192.168.1.0/24 --timeout 300
 | `-r, --range <START> <END>` | Scan an inclusive range of IPs (start and end must share the same family) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
+| `-o, --output <FORMAT>` | Output format: `text` (default), `json`, or `jsonl` |
 
 > Host availability is inferred from a TCP probe: a host counts as up when it either accepts the connection or actively refuses it (a closed port still proves the host answered). A host that times out or is unreachable is reported as down — so a live host behind a firewall that silently drops packets may appear offline. This is an unprivileged, best-effort check, not an ICMP ping.
+
+### Machine-readable output (`--output`)
+
+By default Asphyxia prints a colorized, human-friendly report. Pass `--output json` or `--output jsonl` (alias `-o`) to emit structured results instead — for example to feed a network map, a coverage analyzer, or any downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted for address scans), `proto`, `latency_ms`, and `status`.
+
+```bash
+# One JSON object per open port, on its own line (JSON Lines)
+asphyxia ps -t example.com -s 22,80,443 -o jsonl
+# {"ip":"93.184.216.34","port":80,"proto":"tcp","latency_ms":12,"status":"open"}
+
+# A single JSON array of available hosts
+asphyxia as -s 192.168.1.0/24 -o json
+```
+
+Records are written to stdout; the progress bar and any errors go to stderr, so a consumer reading stdout sees only the data stream. An empty result is `[]` for `json` and no output for `jsonl`. Pipe straight into `jq`:
+
+```bash
+asphyxia ps -t example.com -r 1 1024 -o jsonl 2>/dev/null | jq -c 'select(.port == 443)'
+```
 
 ## Performance
 

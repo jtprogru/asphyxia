@@ -113,3 +113,53 @@ fn concurrency_flag_rejects_non_numeric() {
         .assert()
         .failure();
 }
+
+#[test]
+fn port_scan_json_with_no_open_ports_emits_empty_array() {
+    // Port 1 on loopback is closed, so the machine output is an empty JSON
+    // array and none of the human-facing banners leak onto stdout.
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "-o", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("[]\n"));
+}
+
+#[test]
+fn port_scan_jsonl_with_no_open_ports_emits_nothing() {
+    // JSON Lines prints one object per result; with no open ports stdout is
+    // empty (zero lines), keeping the stream clean for a consumer.
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "-o", "jsonl"])
+        .assert()
+        .success()
+        .stdout(predicate::eq(""));
+}
+
+#[test]
+fn address_scan_json_with_no_hosts_emits_empty_array() {
+    asphyxia()
+        .args(["as", "-t", "192.168.255.255", "-o", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("[]\n"));
+}
+
+#[test]
+fn output_flag_rejects_unknown_format() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "-o", "bogus"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn text_output_remains_the_default() {
+    // Without `-o`, the human-facing banner is still printed: this pins the
+    // backwards-compatible default behaviour.
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Game Over"));
+}

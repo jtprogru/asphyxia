@@ -2,9 +2,19 @@ use ipnetwork::IpNetwork;
 use rayon::prelude::*;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::utils::progress_bar;
+
+/// An available host together with how long the availability probe took.
+///
+/// The latency is the wall-clock time the [`PROBE_PORT`] connection spent
+/// before succeeding or being refused/reset — a rough proxy for distance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostHit {
+    pub ip: IpAddr,
+    pub latency: Duration,
+}
 
 /// TCP port used to probe a host when checking availability.
 ///
@@ -41,7 +51,7 @@ pub const MAX_IPV6_HOSTS: u128 = 1 << 16; // 65_536 addresses (e.g. a /112)
 ///
 /// # Returns
 ///
-/// * `Option<IpAddr>` - The IP address if the host is up, `None` otherwise
+/// * `Option<HostHit>` - The host and its probe latency if up, `None` otherwise
 ///
 /// # Examples
 ///
@@ -51,15 +61,19 @@ pub const MAX_IPV6_HOSTS: u128 = 1 << 16; // 65_536 addresses (e.g. a /112)
 /// use std::time::Duration;
 ///
 /// let ip: IpAddr = "192.168.1.1".parse().unwrap();
-/// if let Some(available_ip) = scan_address(ip, Some(Duration::from_millis(500))) {
-///     println!("Host {} is up", available_ip);
+/// if let Some(hit) = scan_address(ip, Some(Duration::from_millis(500))) {
+///     println!("Host {} is up ({} ms)", hit.ip, hit.latency.as_millis());
 /// }
 /// ```
-pub fn scan_address(ip: IpAddr, timeout: Option<Duration>) -> Option<IpAddr> {
+pub fn scan_address(ip: IpAddr, timeout: Option<Duration>) -> Option<HostHit> {
     let timeout = timeout.unwrap_or(crate::scanner::port::CONNECT_TIMEOUT);
+    let start = Instant::now();
     match TcpStream::connect_timeout(&SocketAddr::new(ip, PROBE_PORT), timeout) {
         // Port is open: the host is unambiguously up.
-        Ok(_) => Some(ip),
+        Ok(_) => Some(HostHit {
+            ip,
+            latency: start.elapsed(),
+        }),
         // The host replied with a reset — it is up, the port is just closed.
         Err(e)
             if matches!(
@@ -67,7 +81,10 @@ pub fn scan_address(ip: IpAddr, timeout: Option<Duration>) -> Option<IpAddr> {
                 ErrorKind::ConnectionRefused | ErrorKind::ConnectionReset
             ) =>
         {
-            Some(ip)
+            Some(HostHit {
+                ip,
+                latency: start.elapsed(),
+            })
         }
         // Timeout, unreachable, or anything else: treat the host as down.
         Err(_) => None,
@@ -80,13 +97,13 @@ pub fn scan_address(ip: IpAddr, timeout: Option<Duration>) -> Option<IpAddr> {
 /// This is the shared engine behind subnet and range scans: it owns the
 /// progress bar and the parallel fan-out so callers only have to describe
 /// which addresses to probe.
-fn scan_all<I>(addrs: I, total: u64, timeout: Option<Duration>, finish_msg: &str) -> Vec<IpAddr>
+fn scan_all<I>(addrs: I, total: u64, timeout: Option<Duration>, finish_msg: &str) -> Vec<HostHit>
 where
     I: ParallelIterator<Item = IpAddr>,
 {
     let pb = progress_bar(total, "addresses scanned");
 
-    let mut result: Vec<IpAddr> = addrs
+    let mut result: Vec<HostHit> = addrs
         .filter_map(|ip| {
             let available = scan_address(ip, timeout);
             pb.inc(1);
@@ -95,7 +112,7 @@ where
         .collect();
 
     pb.finish_with_message(finish_msg.to_string());
-    result.sort();
+    result.sort_by_key(|h| h.ip);
     result
 }
 
@@ -112,7 +129,7 @@ where
 ///
 /// # Returns
 ///
-/// * `Vec<IpAddr>` - A vector of available IP addresses
+/// * `Vec<HostHit>` - A vector of available hosts with their probe latency
 ///
 /// # Examples
 ///
@@ -124,7 +141,7 @@ where
 /// let available_hosts = scan_subnet(subnet, None);
 /// println!("Found {} available hosts", available_hosts.len());
 /// ```
-pub fn scan_subnet(subnet: IpNetwork, timeout: Option<Duration>) -> Vec<IpAddr> {
+pub fn scan_subnet(subnet: IpNetwork, timeout: Option<Duration>) -> Vec<HostHit> {
     match (subnet.network(), subnet.broadcast()) {
         (IpAddr::V4(network), IpAddr::V4(broadcast)) => {
             let start = u32::from(network);
@@ -168,7 +185,7 @@ pub fn scan_subnet(subnet: IpNetwork, timeout: Option<Duration>) -> Vec<IpAddr> 
 ///
 /// # Returns
 ///
-/// * `Vec<IpAddr>` - A vector of available IP addresses
+/// * `Vec<HostHit>` - A vector of available hosts with their probe latency
 ///
 /// # Examples
 ///
@@ -181,7 +198,7 @@ pub fn scan_subnet(subnet: IpNetwork, timeout: Option<Duration>) -> Vec<IpAddr> 
 /// let available_hosts = scan_ip_range(start, end, None);
 /// println!("Found {} available hosts", available_hosts.len());
 /// ```
-pub fn scan_ip_range(start: IpAddr, end: IpAddr, timeout: Option<Duration>) -> Vec<IpAddr> {
+pub fn scan_ip_range(start: IpAddr, end: IpAddr, timeout: Option<Duration>) -> Vec<HostHit> {
     match (start, end) {
         (IpAddr::V4(start), IpAddr::V4(end)) => {
             let start = u32::from(start);
@@ -267,7 +284,8 @@ mod tests {
         }
 
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
-        assert!(scan_address(ip, TEST_TIMEOUT).is_some());
+        let hit = scan_address(ip, TEST_TIMEOUT).expect("localhost should be up");
+        assert_eq!(hit.ip, ip);
     }
 
     #[test]
@@ -290,8 +308,9 @@ mod tests {
         let results = scan_subnet(subnet, TEST_TIMEOUT);
 
         // Verify that results contain localhost and are sorted
-        assert!(results.contains(&"127.0.0.1".parse::<IpAddr>().unwrap()));
-        assert!(results.windows(2).all(|w| w[0] <= w[1]));
+        let localhost: IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(results.iter().any(|h| h.ip == localhost));
+        assert!(results.windows(2).all(|w| w[0].ip <= w[1].ip));
     }
 
     #[test]
@@ -308,8 +327,9 @@ mod tests {
         let results = scan_ip_range(start, end, TEST_TIMEOUT);
 
         // Verify that results contain localhost and are sorted
-        assert!(results.contains(&"127.0.0.1".parse::<IpAddr>().unwrap()));
-        assert!(results.windows(2).all(|w| w[0] <= w[1]));
+        let localhost: IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(results.iter().any(|h| h.ip == localhost));
+        assert!(results.windows(2).all(|w| w[0].ip <= w[1].ip));
     }
 
     #[test]
