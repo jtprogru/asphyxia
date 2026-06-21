@@ -1,8 +1,18 @@
 use std::net::{IpAddr, Ipv6Addr, TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Default timeout for a single TCP connection attempt.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// An open port together with how long the TCP handshake took.
+///
+/// The latency is the wall-clock time spent in [`TcpStream::connect_timeout`]
+/// for the successful connection — a rough proxy for how close the target is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortHit {
+    pub port: u16,
+    pub latency: Duration,
+}
 
 /// Format a `host:port` authority, wrapping bare IPv6 literals in brackets so
 /// that they round-trip through [`ToSocketAddrs`] (e.g. `[::1]:80`).
@@ -79,21 +89,25 @@ pub fn is_resolvable(host: &str) -> bool {
 ///
 /// # Returns
 ///
-/// * `Option<u16>` - The port number if it's open, `None` otherwise
+/// * `Option<PortHit>` - The open port and its connect latency, or `None` if closed
 ///
 /// # Examples
 ///
 /// ```no_run
 /// use asphyxia::scanner::port::scan_port;
 ///
-/// if let Some(port) = scan_port("example.com".to_string(), 80, None) {
-///     println!("Port {} is open", port);
+/// if let Some(hit) = scan_port("example.com".to_string(), 80, None) {
+///     println!("Port {} is open ({} ms)", hit.port, hit.latency.as_millis());
 /// }
 /// ```
-pub fn scan_port(host: String, port: u16, timeout: Option<Duration>) -> Option<u16> {
+pub fn scan_port(host: String, port: u16, timeout: Option<Duration>) -> Option<PortHit> {
     let socket_addr = host_port(&host, port).to_socket_addrs().ok()?.next()?;
+    let start = Instant::now();
     match TcpStream::connect_timeout(&socket_addr, timeout.unwrap_or(CONNECT_TIMEOUT)) {
-        Ok(_) => Some(port),
+        Ok(_) => Some(PortHit {
+            port,
+            latency: start.elapsed(),
+        }),
         Err(_) => None,
     }
 }

@@ -1,5 +1,7 @@
 use clap::Parser;
 
+use crate::output::OutputFormat;
+
 /// Command line arguments for the Asphyxia network scanner
 #[derive(Parser, Debug)]
 #[command(
@@ -32,6 +34,10 @@ Examples:
 
   # Raise concurrency to speed up a large subnet scan
   asphyxia as -s 10.0.0.0/22 --concurrency 512
+
+  # Emit machine-readable output for a pipeline (text | json | jsonl)
+  asphyxia ps -t example.com -s 22,80,443 -o jsonl
+  asphyxia as -s 10.0.0.0/24 -o json
 
 Required arguments:
   For port scanning (ps):
@@ -70,6 +76,10 @@ pub enum Args {
         /// Maximum number of concurrent connection attempts
         #[arg(short = 'c', long, value_name = "N", default_value_t = 256)]
         concurrency: usize,
+
+        /// Output format
+        #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
+        output: OutputFormat,
     },
     /// Address scanning command
     #[command(name = "as", about = "Start address scanning")]
@@ -93,6 +103,10 @@ pub enum Args {
         /// Maximum number of concurrent connection attempts
         #[arg(short = 'c', long, value_name = "N", default_value_t = 256)]
         concurrency: usize,
+
+        /// Output format
+        #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
+        output: OutputFormat,
     },
 }
 
@@ -104,6 +118,13 @@ impl Args {
             Args::PortScan { concurrency, .. } | Args::AddressScan { concurrency, .. } => {
                 *concurrency
             }
+        }
+    }
+
+    /// The requested output format, regardless of which subcommand was invoked.
+    pub fn output_format(&self) -> OutputFormat {
+        match self {
+            Args::PortScan { output, .. } | Args::AddressScan { output, .. } => *output,
         }
     }
 }

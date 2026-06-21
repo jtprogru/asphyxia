@@ -21,18 +21,18 @@
 //!
 //! ### Basic Port Scanning
 //! ```no_run
-//! use asphyxia::{scan_port, scan_address};
+//! use asphyxia::scan_port;
 //!
 //! // Scan a single port (default timeout)
-//! if let Some(port) = scan_port("example.com".to_string(), 80, None) {
-//!     println!("Port 80 is open");
+//! if let Some(hit) = scan_port("example.com".to_string(), 80, None) {
+//!     println!("Port {} is open ({} ms)", hit.port, hit.latency.as_millis());
 //! }
 //!
 //! // Scan multiple ports
 //! let ports = vec![80, 443, 8080];
 //! for port in ports {
-//!     if let Some(_) = scan_port("example.com".to_string(), port, None) {
-//!         println!("Port {} is open", port);
+//!     if let Some(hit) = scan_port("example.com".to_string(), port, None) {
+//!         println!("Port {} is open", hit.port);
 //!     }
 //! }
 //! ```
@@ -91,10 +91,12 @@
 //! scanning functions which are optimized for scanning multiple hosts.
 
 pub mod cli;
+pub mod output;
 pub mod scanner;
 pub mod utils;
 
-pub use scanner::address::{scan_address, scan_ip_range, scan_subnet};
+pub use output::{OutputFormat, ScanRecord};
+pub use scanner::address::{HostHit, scan_address, scan_ip_range, scan_subnet};
 /// Re-export commonly used types and functions
-pub use scanner::port::{is_resolvable, resolve_host, scan_port};
+pub use scanner::port::{PortHit, is_resolvable, resolve_host, scan_port};
 pub use utils::{init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar};
