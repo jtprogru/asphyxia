@@ -219,6 +219,53 @@ fn port_scan_jsonl_with_no_open_ports_emits_nothing() {
 }
 
 #[test]
+fn port_scan_csv_emits_header_even_with_no_open_ports() {
+    // CSV always carries its header row so downstream parsers have a schema.
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "-o", "csv"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("ip,port,proto,status,latency_ms\n"));
+}
+
+#[test]
+fn port_scan_grep_with_no_open_ports_emits_nothing() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "-o", "grep"])
+        .assert()
+        .success()
+        .stdout(predicate::eq(""));
+}
+
+#[test]
+fn output_file_writes_machine_output_and_keeps_stdout_clean() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("asphyxia-cli-out-{}.csv", std::process::id()));
+    let path_str = path.to_str().unwrap();
+
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "-o",
+            "csv",
+            "--output-file",
+            path_str,
+        ])
+        .assert()
+        .success()
+        // Machine output went to the file, not stdout.
+        .stdout(predicate::eq(""));
+
+    let contents = std::fs::read_to_string(&path).expect("output file should exist");
+    assert!(contents.starts_with("ip,port,proto,status,latency_ms\n"));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn address_scan_json_with_no_hosts_emits_empty_array() {
     asphyxia()
         .args(["as", "-t", "192.168.255.255", "-o", "json"])
