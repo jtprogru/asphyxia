@@ -107,6 +107,10 @@ asphyxia ps -t example.com --top-ports 1000
 # Scan a named port set (web, mail, db, remote, windows)
 asphyxia ps -t example.com --ports web
 
+# Drop specific ports from the set, and spare known CDN/WAF targets (80/443 only)
+asphyxia ps -t example.com --top-ports 1000 --exclude-ports 9100,631
+asphyxia ps --stdin --top-ports 1000 --exclude-cdn < hosts.txt
+
 # Scan an IPv6 host with a shorter timeout
 asphyxia ps -t 2001:db8::1 -s 22,80,443 --timeout 500
 
@@ -125,6 +129,8 @@ Exactly one target source is required — either `-t/--host` or `--stdin` — an
 | `-a, --all-ports` | Scan the entire port range (1-65535) |
 | `--top-ports <N>` | Scan the `N` most common TCP ports (frequency-ordered, up to 1000) |
 | `--ports <NAME>` | Scan a named port set: `web`, `mail`, `db`, `remote`, `windows` |
+| `--exclude-ports <PORTS>` | Remove these comma-separated ports from the scan set |
+| `--exclude-cdn` | For known CDN/WAF targets, scan only 80 and 443 instead of the full set |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 | `--retries <N>` | Extra retries per probe on no answer/timeout (default: 0); refused ports are never retried |
@@ -150,6 +156,10 @@ asphyxia as -s 192.168.1.0/24 --timeout 300
 
 # Skip discovery and treat every address as up (like nmap -Pn)
 asphyxia as -s 192.168.1.0/24 --Pn -o jsonl | asphyxia ps --stdin --top-ports 100
+
+# Exclude hosts/CIDRs from a subnet scan (inline and/or from a file)
+asphyxia as -s 192.168.1.0/24 --exclude 192.168.1.0/28 --exclude 192.168.1.100
+asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 ```
 
 | Flag | Description |
@@ -158,11 +168,15 @@ asphyxia as -s 192.168.1.0/24 --Pn -o jsonl | asphyxia ps --stdin --top-ports 10
 | `-t, --target <IP>` | Scan a single IPv4 or IPv6 address |
 | `-r, --range <START> <END>` | Scan an inclusive range of IPs (start and end must share the same family) |
 | `--Pn` (`--skip-discovery`) | Skip host discovery and treat every target as up (like nmap `-Pn`) |
+| `--exclude <SPEC>` | Exclude hosts/CIDRs from the scan (repeatable; each value may be comma-separated) |
+| `--exclude-file <PATH>` | Exclude hosts/CIDRs listed in a file (one per line; `#` comments allowed) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 | `--retries <N>` | Extra retries per probe on no answer/timeout (default: 0); refused ports are never retried |
 | `-o, --output <FORMAT>` | Output format: `text` (default), `json`, `jsonl`, `csv`, or `grep` |
 | `--output-file <PATH>` (`--oF`) | Write machine-readable output to a file instead of stdout |
+
+> `--exclude-cdn` uses a small, static list of well-known CDN/WAF ranges (Cloudflare, Fastly, some Akamai) baked into the binary. It is a convenience, not an authoritative registry, and can drift as providers change allocations.
 
 > Host availability is inferred from TCP probes across a small spread of common ports (80, 443, 22, 3389), tried in order until one answers: a host counts as up when any probed port either accepts the connection or actively refuses it (a closed port still proves the host answered). Probing more than one port finds live hosts that firewall port 80 but answer elsewhere. Only when every probed port times out or is unreachable is the host reported as down — so a host that silently drops packets on all of them may still appear offline. This is an unprivileged, best-effort check, not an ICMP ping; use `--Pn` to skip discovery entirely and treat every target as up.
 

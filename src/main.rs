@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::path::Path;
 use std::time::Duration;
 
 use clap::Parser;
@@ -7,6 +8,7 @@ use rayon::prelude::*;
 
 use asphyxia::cli::Args;
 use asphyxia::output::{OutputFormat, ScanRecord, emit};
+use asphyxia::scanner::exclude::ExcludeSet;
 use asphyxia::scanner::well_known::{named_port_set, top_ports};
 use asphyxia::scanner::{address, port};
 use asphyxia::utils::{
@@ -23,6 +25,44 @@ fn all_up(addrs: Vec<IpAddr>) -> Vec<address::HostHit> {
             latency: Duration::ZERO,
         })
         .collect()
+}
+
+/// Build the address exclusion set from the `--exclude` specs and an optional
+/// `--exclude-file`. Blank lines and `#` comments in the file are ignored.
+fn build_exclude_set(specs: &[String], file: Option<&Path>) -> Result<ExcludeSet, String> {
+    let mut all: Vec<String> = specs.to_vec();
+    if let Some(path) = file {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| format!("Could not read exclude file {}: {}", path.display(), e))?;
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            all.push(line.to_string());
+        }
+    }
+    ExcludeSet::parse(all)
+}
+
+/// Filter out excluded addresses, then either mark the survivors up (for `-Pn`)
+/// or scan them.
+fn scan_filtered(
+    addrs: Vec<IpAddr>,
+    exclude: &ExcludeSet,
+    no_discovery: bool,
+    timeout: Option<Duration>,
+    retries: u32,
+) -> Vec<address::HostHit> {
+    let filtered: Vec<IpAddr> = addrs
+        .into_iter()
+        .filter(|ip| !exclude.contains(*ip))
+        .collect();
+    if no_discovery {
+        all_up(filtered)
+    } else {
+        address::scan_hosts(filtered, timeout, retries)
+    }
 }
 
 fn main() {
@@ -44,12 +84,14 @@ fn main() {
             all_ports,
             top_ports: top_n,
             port_set,
+            exclude_ports,
+            exclude_cdn,
             timeout,
             ..
         } => {
             let timeout = Some(Duration::from_millis(timeout));
 
-            let ports: Vec<u16> = if all_ports {
+            let mut ports: Vec<u16> = if all_ports {
                 (1..=u16::MAX).collect()
             } else if let Some(range) = range {
                 // clap enforces exactly two values via `num_args = 2`.
@@ -91,6 +133,36 @@ fn main() {
                 );
                 return;
             };
+
+            // Drop any explicitly excluded ports from the set.
+            if let Some(spec) = exclude_ports {
+                match parse_ports(&spec) {
+                    Ok(excluded) => {
+                        let excluded: std::collections::HashSet<u16> =
+                            excluded.into_iter().collect();
+                        ports.retain(|p| !excluded.contains(p));
+                    }
+                    Err(e) => {
+                        eprintln!("{}", e.red());
+                        return;
+                    }
+                }
+            }
+
+            if ports.is_empty() {
+                eprintln!("{}", "No ports left to scan after exclusions".yellow());
+                return;
+            }
+
+            // When --exclude-cdn is set, CDN/WAF targets are scanned only on the
+            // web ports rather than the full set (a deep scan there is pointless
+            // and antisocial). Precompute the CDN ranges and the web subset once.
+            let cdn = exclude_cdn.then(ExcludeSet::cdn);
+            let web_ports: Vec<u16> = ports
+                .iter()
+                .copied()
+                .filter(|p| *p == 80 || *p == 443)
+                .collect();
 
             // Gather the raw targets: either the single `-t` host, or a batch
             // read from stdin (clap guarantees exactly one of the two is set).
@@ -142,10 +214,17 @@ fn main() {
 
             // Fan every (host, port) pair out across the shared pool so that
             // multiple hosts are probed concurrently, not one after another.
+            // A CDN/WAF target (with --exclude-cdn) is limited to its web ports.
             let jobs: Vec<(usize, u16)> = resolved
                 .iter()
                 .enumerate()
-                .flat_map(|(i, _)| ports.iter().map(move |&port| (i, port)))
+                .flat_map(|(i, (_, ip))| {
+                    let is_cdn = cdn.as_ref().is_some_and(|c| {
+                        ip.parse::<IpAddr>().map(|a| c.contains(a)).unwrap_or(false)
+                    });
+                    let plist: &[u16] = if is_cdn { &web_ports } else { &ports };
+                    plist.iter().map(move |&port| (i, port))
+                })
                 .collect();
 
             let pb = progress_bar(jobs.len() as u64, "ports scanned");
@@ -212,10 +291,25 @@ fn main() {
             target,
             range,
             no_discovery,
+            exclude,
+            exclude_file,
             timeout,
             ..
         } => {
             let timeout = Some(Duration::from_millis(timeout));
+
+            let exclude_set = match build_exclude_set(&exclude, exclude_file.as_deref()) {
+                Ok(set) => set,
+                Err(e) => {
+                    eprintln!("{}", e.red());
+                    return;
+                }
+            };
+
+            // Enumerate-filter-scan only when it earns its keep (exclusions or
+            // -Pn); otherwise keep the lazy subnet/range scan that never
+            // materialises the whole address space.
+            let materialize = no_discovery || !exclude_set.is_empty();
 
             let available: Vec<address::HostHit> = if let Some(subnet_str) = subnet {
                 match parse_subnet(&subnet_str) {
@@ -227,8 +321,14 @@ fn main() {
                                 subnet_str.as_str().bright_green()
                             );
                         }
-                        if no_discovery {
-                            all_up(address::subnet_addresses(network))
+                        if materialize {
+                            scan_filtered(
+                                address::subnet_addresses(network),
+                                &exclude_set,
+                                no_discovery,
+                                timeout,
+                                retries,
+                            )
                         } else {
                             address::scan_subnet_with_retries(network, timeout, retries)
                         }
@@ -248,8 +348,8 @@ fn main() {
                                 target_str.as_str().bright_green()
                             );
                         }
-                        if no_discovery {
-                            all_up(vec![ip])
+                        if materialize {
+                            scan_filtered(vec![ip], &exclude_set, no_discovery, timeout, retries)
                         } else {
                             address::scan_address_with_retries(ip, timeout, retries)
                                 .into_iter()
@@ -273,8 +373,14 @@ fn main() {
                                 range_vec[1].as_str().bright_green()
                             );
                         }
-                        if no_discovery {
-                            all_up(address::range_addresses(start, end))
+                        if materialize {
+                            scan_filtered(
+                                address::range_addresses(start, end),
+                                &exclude_set,
+                                no_discovery,
+                                timeout,
+                                retries,
+                            )
                         } else {
                             address::scan_ip_range_with_retries(start, end, timeout, retries)
                         }
