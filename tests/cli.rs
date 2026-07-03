@@ -412,6 +412,30 @@ fn config_supplies_defaults_that_flags_override() {
 }
 
 #[test]
+fn udp_scan_reports_proto_udp_in_json() {
+    // A UDP probe to a closed loopback port typically draws an ICMP
+    // port-unreachable (closed → not reported) or stays silent
+    // (open|filtered). Either way the run succeeds and, when anything is
+    // reported, it is tagged proto "udp" — never "tcp".
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "9",
+            "--udp",
+            "--timeout",
+            "300",
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"proto\":\"tcp\"").not());
+}
+
+#[test]
 fn nmap_args_requires_the_nmap_flag() {
     // --nmap-args without --nmap is a parse error (clap `requires`).
     asphyxia()

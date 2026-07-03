@@ -27,6 +27,9 @@ Examples:
   asphyxia ps -t example.com --top-ports 100
   asphyxia ps -t example.com --ports web
 
+  # Scan UDP ports instead of TCP (open or open|filtered)
+  asphyxia ps -t example.com -s 53,123,161 --udp
+
   # Find open ports fast, then hand them to nmap for a deep dive
   asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap
   asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
@@ -87,6 +90,7 @@ Required arguments:
     -a, --all-ports              Scan the entire port range (1-65535)
     --top-ports <N>              Scan the N most common TCP ports (up to 1000)
     --ports <NAME>               Scan a named port set (web, mail, db, remote, windows)
+    -u, --udp                    Scan UDP ports instead of TCP (open or open|filtered)
     --rate <PPS>                 Cap connection attempts per second (0 = no cap)
     -T, --timing <0-5>           Timing profile (paranoid..insane) presetting the tunables
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
@@ -154,6 +158,10 @@ pub enum Args {
         /// For known CDN/WAF targets, scan only 80 and 443 instead of the full set
         #[arg(long = "exclude-cdn")]
         exclude_cdn: bool,
+
+        /// Scan UDP ports instead of TCP (results are open or open|filtered)
+        #[arg(short = 'u', long = "udp")]
+        udp: bool,
 
         /// After the scan, run nmap on each host's open ports for a deep dive
         #[arg(long = "nmap")]

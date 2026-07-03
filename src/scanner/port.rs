@@ -195,6 +195,168 @@ fn probe_port(host: &str, port: u16, timeout: Duration) -> Probe {
     }
 }
 
+// ---------------------------------------------------------------------------
+// UDP scanning
+// ---------------------------------------------------------------------------
+
+/// An observed UDP port together with how long the probe took.
+///
+/// UDP has no handshake, so a port is either provably `open` (it sent a reply)
+/// or `open|filtered` (it stayed silent — the datagram may have been dropped, or
+/// the service simply does not answer this probe). A port that answers with an
+/// ICMP port-unreachable is closed and is not reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UdpHit {
+    pub port: u16,
+    pub latency: Duration,
+    /// `true` when the port replied (`open`), `false` when it was silent
+    /// (`open|filtered`).
+    pub open: bool,
+}
+
+/// The classified outcome of a single UDP probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UdpProbe {
+    /// The port replied — it is open.
+    Open,
+    /// ICMP port-unreachable came back — the port is closed.
+    Closed,
+    /// No reply within the timeout — open or filtered, indistinguishable
+    /// without privileges.
+    OpenFiltered,
+}
+
+/// Scan a UDP `port`, retrying a silent probe up to `retries` extra times (a
+/// dropped datagram can otherwise masquerade as `open|filtered`).
+///
+/// Returns `None` for a closed port (ICMP unreachable), and `Some(UdpHit)` for
+/// an open or open|filtered port. For a handful of well-known ports a
+/// protocol-specific payload is sent to coax a reply and cut down on
+/// `open|filtered` results; other ports get an empty datagram.
+///
+/// # Examples
+///
+/// ```no_run
+/// use asphyxia::scanner::port::scan_udp_port;
+///
+/// if let Some(hit) = scan_udp_port("1.1.1.1".to_string(), 53, None, 1) {
+///     println!("udp/{} is {}", hit.port, if hit.open { "open" } else { "open|filtered" });
+/// }
+/// ```
+pub fn scan_udp_port(
+    host: String,
+    port: u16,
+    timeout: Option<Duration>,
+    retries: u32,
+) -> Option<UdpHit> {
+    let timeout = timeout.unwrap_or(CONNECT_TIMEOUT);
+    let start = Instant::now();
+
+    // Retry only the ambiguous "silent" outcome; a reply or an ICMP unreachable
+    // is a definitive answer.
+    let mut outcome = UdpProbe::OpenFiltered;
+    for _ in 0..=retries {
+        outcome = probe_udp(&host, port, timeout);
+        if outcome != UdpProbe::OpenFiltered {
+            break;
+        }
+    }
+
+    match outcome {
+        UdpProbe::Open => Some(UdpHit {
+            port,
+            latency: start.elapsed(),
+            open: true,
+        }),
+        UdpProbe::OpenFiltered => Some(UdpHit {
+            port,
+            latency: start.elapsed(),
+            open: false,
+        }),
+        UdpProbe::Closed => None,
+    }
+}
+
+/// Send one UDP datagram and classify what comes back.
+fn probe_udp(host: &str, port: u16, timeout: Duration) -> UdpProbe {
+    use std::net::UdpSocket;
+
+    // Respect the global rate limit (no-op when none is installed).
+    crate::rate::gate();
+
+    let Some(target) = host_port(host, port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+    else {
+        // Unresolvable: nothing to probe.
+        return UdpProbe::Closed;
+    };
+
+    // Bind an ephemeral local socket in the target's address family.
+    let bind_addr = if target.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    let Ok(socket) = UdpSocket::bind(bind_addr) else {
+        return UdpProbe::OpenFiltered;
+    };
+    if socket.connect(target).is_err() {
+        return UdpProbe::OpenFiltered;
+    }
+    if socket.set_read_timeout(Some(timeout)).is_err() {
+        return UdpProbe::OpenFiltered;
+    }
+    if socket.send(&udp_probe_payload(port)).is_err() {
+        return UdpProbe::OpenFiltered;
+    }
+
+    let mut buf = [0u8; 512];
+    classify_udp(socket.recv(&mut buf))
+}
+
+/// Map a UDP `recv` result to a probe outcome.
+fn classify_udp(result: std::io::Result<usize>) -> UdpProbe {
+    match result {
+        // Any reply proves the port is open.
+        Ok(_) => UdpProbe::Open,
+        // A connected UDP socket surfaces ICMP port-unreachable as a refusal.
+        Err(e) if e.kind() == ErrorKind::ConnectionRefused => UdpProbe::Closed,
+        // Timeout or would-block: no answer, so open or filtered.
+        Err(_) => UdpProbe::OpenFiltered,
+    }
+}
+
+/// A protocol-specific probe payload for `port`, or an empty datagram when no
+/// specific probe is known. A tailored payload is far more likely to elicit a
+/// reply, which turns an `open|filtered` guess into a definite `open`.
+fn udp_probe_payload(port: u16) -> Vec<u8> {
+    match port {
+        // DNS: a standard query for the root NS record (RD set).
+        53 => vec![
+            0x12, 0x34, // transaction id
+            0x01, 0x00, // flags: recursion desired
+            0x00, 0x01, // qdcount = 1
+            0x00, 0x00, // ancount
+            0x00, 0x00, // nscount
+            0x00, 0x00, // arcount
+            0x00, // qname: root
+            0x00, 0x02, // qtype: NS
+            0x00, 0x01, // qclass: IN
+        ],
+        // NTP: a 48-byte client request (LI=0, VN=3, mode=3 client).
+        123 => {
+            let mut pkt = vec![0u8; 48];
+            pkt[0] = 0x1b;
+            pkt
+        }
+        // Others: an empty datagram is enough to trigger an ICMP unreachable
+        // from a closed port.
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +457,67 @@ mod tests {
             Probe::NoAnswer
         });
         assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn udp_classification_maps_recv_outcomes() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(classify_udp(Ok(12)), UdpProbe::Open);
+        assert_eq!(
+            classify_udp(Err(Error::from(ErrorKind::ConnectionRefused))),
+            UdpProbe::Closed
+        );
+        assert_eq!(
+            classify_udp(Err(Error::from(ErrorKind::WouldBlock))),
+            UdpProbe::OpenFiltered
+        );
+        assert_eq!(
+            classify_udp(Err(Error::from(ErrorKind::TimedOut))),
+            UdpProbe::OpenFiltered
+        );
+    }
+
+    #[test]
+    fn dns_payload_is_a_wellformed_query_header() {
+        let dns = udp_probe_payload(53);
+        assert!(!dns.is_empty());
+        // qdcount == 1 lives in bytes 4..6.
+        assert_eq!(&dns[4..6], &[0x00, 0x01]);
+        // Query terminates with root name + qtype NS + qclass IN.
+        assert_eq!(&dns[dns.len() - 5..], &[0x00, 0x00, 0x02, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn ntp_payload_is_a_48_byte_client_request() {
+        let ntp = udp_probe_payload(123);
+        assert_eq!(ntp.len(), 48);
+        assert_eq!(ntp[0], 0x1b);
+    }
+
+    #[test]
+    fn unknown_ports_get_an_empty_payload() {
+        assert!(udp_probe_payload(4444).is_empty());
+    }
+
+    #[test]
+    fn udp_scan_reports_open_when_a_local_server_replies() {
+        use std::net::UdpSocket;
+        use std::thread;
+
+        // A local UDP echo server: it replies to the first datagram, which must
+        // make the probe classify the port as open.
+        let server = UdpSocket::bind("127.0.0.1:0").expect("bind server");
+        let port = server.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let mut buf = [0u8; 512];
+            if let Ok((n, peer)) = server.recv_from(&mut buf) {
+                let _ = server.send_to(&buf[..n], peer);
+            }
+        });
+
+        let hit = scan_udp_port("127.0.0.1".to_string(), port, TEST_TIMEOUT, 0)
+            .expect("a replying port is open|filtered or open, never closed");
+        assert!(hit.open, "a replying UDP port must be reported open");
+        let _ = handle.join();
     }
 }
