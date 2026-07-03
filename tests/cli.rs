@@ -478,6 +478,65 @@ fn udp_scan_reports_proto_udp_in_json() {
 }
 
 #[test]
+fn resume_writes_a_checkpoint_file() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("asphyxia-resume-out-{}.json", std::process::id()));
+
+    // A closed-port scan finishes immediately; it must still leave a valid,
+    // fully-completed checkpoint behind.
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--resume",
+            path.to_str().unwrap(),
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success();
+
+    let state = std::fs::read_to_string(&path).expect("checkpoint file should exist");
+    assert!(state.contains("\"job_count\":1"));
+    assert!(state.contains("\"done\":[true]"));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn resume_skips_completed_work_and_reuses_recorded_findings() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("asphyxia-resume-in-{}.json", std::process::id()));
+
+    // Hand-craft a fully-completed state for `ps -t 127.0.0.1 -s 1` that claims
+    // port 1 is open. Port 1 is actually closed, so seeing it in the output
+    // proves the recorded finding was reused and the job was not re-scanned.
+    let state = r#"{"proto":"tcp","targets":["127.0.0.1"],"ports":[1],"job_count":1,"done":[true],"findings":[{"host":0,"port":1,"latency_ms":7,"status":"open"}]}"#;
+    std::fs::write(&path, state).unwrap();
+
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--resume",
+            path.to_str().unwrap(),
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"port\":1"))
+        .stdout(predicate::str::contains("\"status\":\"open\""));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn nmap_args_requires_the_nmap_flag() {
     // --nmap-args without --nmap is a parse error (clap `requires`).
     asphyxia()

@@ -11,6 +11,7 @@ use asphyxia::cli::Args;
 use asphyxia::config::Config;
 use asphyxia::output::{OutputFormat, ScanRecord, emit};
 use asphyxia::rate;
+use asphyxia::resume::{ScanState, StateFinding};
 use asphyxia::scanner::exclude::ExcludeSet;
 use asphyxia::scanner::well_known::{named_port_set, top_ports};
 use asphyxia::scanner::{address, nmap, port, service};
@@ -127,6 +128,161 @@ fn scan_filtered(
     }
 }
 
+/// Map a persisted status string back to the `&'static str` the report uses.
+fn status_str(status: &str) -> &'static str {
+    if status == "open|filtered" {
+        "open|filtered"
+    } else {
+        "open"
+    }
+}
+
+/// Probe a single `(ip, port)` job, returning a [`Finding`] when the port is
+/// reportable. TCP yields only open ports (optionally with a grabbed banner);
+/// UDP also yields open|filtered.
+#[allow(clippy::too_many_arguments)]
+fn scan_one(
+    udp: bool,
+    ip: String,
+    port: u16,
+    timeout: Option<Duration>,
+    connect_timeout: Duration,
+    retries: u32,
+    detect_service: bool,
+) -> Option<Finding> {
+    if udp {
+        port::scan_udp_port(ip, port, timeout, retries).map(|hit| Finding {
+            port: hit.port,
+            latency: hit.latency,
+            status: if hit.open { "open" } else { "open|filtered" },
+            service: None,
+            banner: None,
+        })
+    } else {
+        port::scan_port_with_retries(ip.clone(), port, timeout, retries).map(|hit| {
+            let (service, banner) = if detect_service {
+                service::detect(&ip, hit.port, connect_timeout)
+            } else {
+                (None, None)
+            };
+            Finding {
+                port: hit.port,
+                latency: hit.latency,
+                status: "open",
+                service,
+                banner,
+            }
+        })
+    }
+}
+
+/// Run a port scan that checkpoints to `state_path` and resumes from it.
+///
+/// A compatible existing state file is loaded and its completed jobs skipped;
+/// otherwise a fresh state is started. Progress is flushed periodically and on
+/// Ctrl-C, and a final flush is written at the end. The returned findings are
+/// the union of prior and freshly-discovered results, sorted by `(host, port)`.
+#[allow(clippy::too_many_arguments)]
+fn run_resumable_port_scan(
+    jobs: &[(usize, u16)],
+    resolved: &[(String, String)],
+    ports: &[u16],
+    proto: &str,
+    udp: bool,
+    timeout: Option<Duration>,
+    connect_timeout: Duration,
+    retries: u32,
+    detect_service: bool,
+    state_path: &Path,
+    pb: &indicatif::ProgressBar,
+) -> Vec<(usize, Finding)> {
+    use std::sync::{Arc, Mutex};
+
+    // Flush the checkpoint to disk at most every this many completed jobs.
+    const FLUSH_EVERY: usize = 128;
+
+    let targets: Vec<String> = resolved.iter().map(|(_, ip)| ip.clone()).collect();
+    let job_count = jobs.len();
+
+    // Resume from a compatible state, else start fresh.
+    let initial = ScanState::load(state_path)
+        .ok()
+        .filter(|s| s.is_compatible(proto, &targets, ports, job_count))
+        .unwrap_or_else(|| ScanState::new(proto, targets.clone(), ports.to_vec(), job_count));
+
+    // Account for already-completed jobs on the progress bar.
+    pb.inc((job_count - initial.remaining()) as u64);
+
+    let state = Arc::new(Mutex::new(initial));
+
+    // On Ctrl-C, flush a valid checkpoint and exit so the scan can be resumed.
+    {
+        let state = Arc::clone(&state);
+        let path = state_path.to_path_buf();
+        let _ = ctrlc::set_handler(move || {
+            if let Ok(s) = state.lock() {
+                let _ = s.save(&path);
+            }
+            eprintln!("\nInterrupted — progress saved to {}", path.display());
+            std::process::exit(130);
+        });
+    }
+
+    jobs.par_iter().enumerate().for_each(|(idx, (i, port))| {
+        if !state.lock().unwrap().is_pending(idx) {
+            return;
+        }
+        let finding = scan_one(
+            udp,
+            resolved[*i].1.clone(),
+            *port,
+            timeout,
+            connect_timeout,
+            retries,
+            detect_service,
+        );
+        let recorded = finding.as_ref().map(|f| StateFinding {
+            host: *i,
+            port: f.port,
+            latency_ms: f.latency.as_millis(),
+            status: f.status.to_string(),
+            service: f.service.clone(),
+            banner: f.banner.clone(),
+        });
+        {
+            let mut s = state.lock().unwrap();
+            s.complete(idx, recorded);
+            if idx % FLUSH_EVERY == 0 {
+                let _ = s.save(state_path);
+            }
+        }
+        pb.inc(1);
+    });
+
+    // Final checkpoint, then rebuild the report from every recorded finding.
+    let state = state.lock().unwrap();
+    let _ = state.save(state_path);
+
+    let mut opened: Vec<(usize, Finding)> = state
+        .findings
+        .iter()
+        .map(|f| {
+            (
+                f.host,
+                Finding {
+                    port: f.port,
+                    latency: Duration::from_millis(f.latency_ms as u64),
+                    status: status_str(&f.status),
+                    service: f.service.clone(),
+                    banner: f.banner.clone(),
+                },
+            )
+        })
+        .collect();
+    opened.sort_by_key(|(i, f)| (*i, f.port));
+    opened
+}
+
 /// Resolve the tunable scan options into `args`, layering three sources under a
 /// strict precedence: an explicit CLI flag beats a `-T` timing profile, which
 /// beats `~/.asphyxia.toml`, which beats the built-in defaults.
@@ -236,6 +392,7 @@ fn main() {
             exclude_cdn,
             udp,
             service_detection,
+            resume,
             nmap,
             nmap_args,
             timeout,
@@ -406,46 +563,44 @@ fn main() {
 
             // Probe every (host, port) pair. TCP yields only open ports; UDP also
             // reports open|filtered (silent) ports, since silence is meaningful.
-            let mut opened: Vec<(usize, Finding)> = jobs
-                .into_par_iter()
-                .filter_map(|(i, port)| {
-                    let ip = resolved[i].1.clone();
-                    let finding = if udp {
-                        port::scan_udp_port(ip, port, timeout, retries).map(|hit| Finding {
-                            port: hit.port,
-                            latency: hit.latency,
-                            status: if hit.open { "open" } else { "open|filtered" },
-                            service: None,
-                            banner: None,
-                        })
-                    } else {
-                        port::scan_port_with_retries(ip.clone(), port, timeout, retries).map(
-                            |hit| {
-                                // For an open TCP port, optionally grab a banner and
-                                // identify the service.
-                                let (service, banner) = if detect_service {
-                                    service::detect(&ip, hit.port, connect_timeout)
-                                } else {
-                                    (None, None)
-                                };
-                                Finding {
-                                    port: hit.port,
-                                    latency: hit.latency,
-                                    status: "open",
-                                    service,
-                                    banner,
-                                }
-                            },
-                        )
-                    };
-                    pb.inc(1);
-                    finding.map(|f| (i, f))
-                })
-                .collect();
+            // With --resume the scan checkpoints to a file and skips work already
+            // recorded there; otherwise it is a plain parallel sweep.
+            let opened: Vec<(usize, Finding)> = if let Some(state_path) = &resume {
+                run_resumable_port_scan(
+                    &jobs,
+                    &resolved,
+                    &ports,
+                    proto,
+                    udp,
+                    timeout,
+                    connect_timeout,
+                    retries,
+                    detect_service,
+                    state_path,
+                    &pb,
+                )
+            } else {
+                let mut opened: Vec<(usize, Finding)> = jobs
+                    .par_iter()
+                    .filter_map(|&(i, port)| {
+                        let finding = scan_one(
+                            udp,
+                            resolved[i].1.clone(),
+                            port,
+                            timeout,
+                            connect_timeout,
+                            retries,
+                            detect_service,
+                        );
+                        pb.inc(1);
+                        finding.map(|f| (i, f))
+                    })
+                    .collect();
+                opened.sort_by_key(|(i, f)| (*i, f.port));
+                opened
+            };
 
             pb.finish_with_message("Scan completed");
-
-            opened.sort_by_key(|(i, f)| (*i, f.port));
 
             match format {
                 OutputFormat::Text => {

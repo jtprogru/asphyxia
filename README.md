@@ -28,6 +28,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 
 - **Target sources** — scan a single host, pipe targets in with `--stdin`, or read them from a file with `-i/--target-file`; hosts, IPs, and CIDRs are all accepted, and CIDRs in a file are expanded.
 - **Configuration file** — set defaults (timeout, concurrency, retries, output format) in `~/.asphyxia.toml`; command-line flags override it.
+- **Resumable scans** — checkpoint a long port scan with `--resume <file>` and pick it up where it stopped after a Ctrl-C, crash, or dropped link.
 
 > Note: IPv6 subnet and range scans are capped at 65 536 addresses (e.g. a `/112`), since larger IPv6 spaces are impractical to walk exhaustively.
 
@@ -146,6 +147,7 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `-a, --all-ports` | Scan the entire port range (1-65535) |
 | `-u, --udp` | Scan UDP ports instead of TCP (results are `open` or `open\|filtered`) |
 | `--sV` (`--banner`) | Grab banners and identify the service on each open TCP port |
+| `--resume <PATH>` | Checkpoint progress to a file and resume from it if it already exists |
 | `--top-ports <N>` | Scan the `N` most common TCP ports (frequency-ordered, up to 1000) |
 | `--ports <NAME>` | Scan a named port set: `web`, `mail`, `db`, `remote`, `windows` |
 | `--exclude-ports <PORTS>` | Remove these comma-separated ports from the scan set |
@@ -186,6 +188,20 @@ asphyxia ps -t example.com -s 22,80,443 --sV
 asphyxia ps -t example.com --top-ports 100 --sV -o jsonl
 # {"ip":"93.184.216.34","port":22,"proto":"tcp","latency_ms":7,"status":"open","service":"ssh","banner":"SSH-2.0-OpenSSH_9.6"}
 ```
+
+#### Resuming a long scan (`--resume`)
+
+A big port scan — many hosts × `--all-ports` — can run for a long time, and losing it to Ctrl-C, a dropped connection, or a crash means starting over. `--resume <file>` checkpoints progress to a state file as the scan runs. Re-run the exact same command with the same file and it picks up where it left off, skipping completed `(host, port)` work and keeping the results already found.
+
+```bash
+# Start a long scan, checkpointing to scan.state
+asphyxia ps -iL targets.txt --all-ports --resume scan.state
+
+# Interrupt it (Ctrl-C) — the state file is flushed on exit — then resume:
+asphyxia ps -iL targets.txt --all-ports --resume scan.state
+```
+
+The state file is written atomically (temp file + rename) so an interrupt mid-write cannot corrupt it, and it is validated on resume: it only continues when the protocol, targets, and ports match the command, so pointing `--resume` at a file from a different scan safely starts fresh instead of producing bogus results.
 
 ### Address scanning (`as`)
 
