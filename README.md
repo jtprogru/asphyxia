@@ -111,6 +111,10 @@ asphyxia ps -t example.com --ports web
 asphyxia ps -t example.com --top-ports 1000 --exclude-ports 9100,631
 asphyxia ps --stdin --top-ports 1000 --exclude-cdn < hosts.txt
 
+# Find open ports fast, then hand them to nmap for a deep dive
+asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap
+asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
+
 # Scan an IPv6 host with a shorter timeout
 asphyxia ps -t 2001:db8::1 -s 22,80,443 --timeout 500
 
@@ -131,6 +135,8 @@ Exactly one target source is required — either `-t/--host` or `--stdin` — an
 | `--ports <NAME>` | Scan a named port set: `web`, `mail`, `db`, `remote`, `windows` |
 | `--exclude-ports <PORTS>` | Remove these comma-separated ports from the scan set |
 | `--exclude-cdn` | For known CDN/WAF targets, scan only 80 and 443 instead of the full set |
+| `--nmap` | After the scan, run nmap on each host's open ports for a deep dive |
+| `--nmap-args <ARGS>` | Custom nmap arguments (replace the default `-sV -sC`); implies `--nmap` |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 | `--retries <N>` | Extra retries per probe on no answer/timeout (default: 0); refused ports are never retried |
@@ -227,6 +233,20 @@ asphyxia as -s 192.168.1.0/24 -o jsonl 2>/dev/null \
 # Feed a hand-written host list
 asphyxia ps --stdin -s 22,80,443 < hosts.txt
 ```
+
+### Nmap handoff (`--nmap`)
+
+Asphyxia finds open ports quickly; nmap interrogates them thoroughly. `--nmap` bridges the two: after the scan, it groups the open ports by host and runs `nmap` on each, so the classic "scan fast, then deep-dive" workflow is one command.
+
+```bash
+# Fast port sweep, then nmap service/version + default scripts on what's open
+asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap
+
+# Pass your own nmap flags (these replace the default -sV -sC); ports/target stay owned by asphyxia
+asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
+```
+
+By default asphyxia runs `nmap -sV -sC -p <open-ports> <host>`. With `--nmap-args` your flags replace `-sV -sC`, while asphyxia still supplies `-p <open-ports>` and the target. If nmap is not on your `PATH`, asphyxia prints an install hint instead of a deep dive. Nmap's output streams straight to the terminal, so combine `--nmap` with the human (`text`) output rather than a machine format.
 
 ## Performance
 

@@ -27,6 +27,10 @@ Examples:
   asphyxia ps -t example.com --top-ports 100
   asphyxia ps -t example.com --ports web
 
+  # Find open ports fast, then hand them to nmap for a deep dive
+  asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap
+  asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
+
   # Feed live hosts from an address scan straight into a port scan
   asphyxia as -s 192.168.1.0/24 -o jsonl | asphyxia ps --stdin -s 22,80,443
   asphyxia as -s 192.168.1.0/24 -o jsonl | asphyxia ps --stdin --all-ports
@@ -130,6 +134,19 @@ pub enum Args {
         /// For known CDN/WAF targets, scan only 80 and 443 instead of the full set
         #[arg(long = "exclude-cdn")]
         exclude_cdn: bool,
+
+        /// After the scan, run nmap on each host's open ports for a deep dive
+        #[arg(long = "nmap")]
+        nmap: bool,
+
+        /// Custom nmap arguments (replace the default -sV -sC); implies --nmap
+        #[arg(
+            long = "nmap-args",
+            value_name = "ARGS",
+            requires = "nmap",
+            allow_hyphen_values = true
+        )]
+        nmap_args: Option<String>,
 
         /// Connection timeout in milliseconds
         #[arg(long, value_name = "MS", default_value_t = 2000)]

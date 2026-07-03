@@ -101,6 +101,7 @@ pub use scanner::address::{
     scan_ip_range_with_retries, scan_subnet, scan_subnet_with_retries, subnet_addresses,
 };
 pub use scanner::exclude::ExcludeSet;
+pub use scanner::nmap::{nmap_args, run_nmap, split_extra_args};
 /// Re-export commonly used types and functions
 pub use scanner::port::{PortHit, is_resolvable, resolve_host, scan_port, scan_port_with_retries};
 pub use utils::{

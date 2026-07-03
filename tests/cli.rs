@@ -267,6 +267,27 @@ fn port_scan_grep_with_no_open_ports_emits_nothing() {
 }
 
 #[test]
+fn nmap_args_requires_the_nmap_flag() {
+    // --nmap-args without --nmap is a parse error (clap `requires`).
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "80", "--nmap-args", "-A"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nmap"));
+}
+
+#[test]
+fn nmap_flag_with_no_open_ports_does_not_invoke_nmap() {
+    // Port 1 on loopback is closed, so there is no handoff and the run succeeds
+    // regardless of whether nmap is installed on the CI machine.
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "--nmap"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No open ports found"));
+}
+
+#[test]
 fn exclude_ports_removing_the_only_port_prints_guidance() {
     // The only requested port is also excluded, so nothing is left to scan.
     asphyxia()
