@@ -20,6 +20,7 @@ fn main() {
 
     let format = args.output_format();
     let output_file = args.output_file().cloned();
+    let retries = args.retries();
 
     match args {
         Args::PortScan {
@@ -139,7 +140,8 @@ fn main() {
             let mut opened: Vec<(usize, port::PortHit)> = jobs
                 .into_par_iter()
                 .filter_map(|(i, port)| {
-                    let hit = port::scan_port(resolved[i].1.clone(), port, timeout);
+                    let hit =
+                        port::scan_port_with_retries(resolved[i].1.clone(), port, timeout, retries);
                     pb.inc(1);
                     hit.map(|hit| (i, hit))
                 })
@@ -211,7 +213,7 @@ fn main() {
                                 subnet_str.as_str().bright_green()
                             );
                         }
-                        address::scan_subnet(network, timeout)
+                        address::scan_subnet_with_retries(network, timeout, retries)
                     }
                     Err(e) => {
                         eprintln!("{}", e.red());
@@ -228,7 +230,9 @@ fn main() {
                                 target_str.as_str().bright_green()
                             );
                         }
-                        address::scan_address(ip, timeout).into_iter().collect()
+                        address::scan_address_with_retries(ip, timeout, retries)
+                            .into_iter()
+                            .collect()
                     }
                     Err(e) => {
                         eprintln!("{}", e.red());
@@ -247,7 +251,7 @@ fn main() {
                                 range_vec[1].as_str().bright_green()
                             );
                         }
-                        address::scan_ip_range(start, end, timeout)
+                        address::scan_ip_range_with_retries(start, end, timeout, retries)
                     }
                     (Err(e), _) | (_, Err(e)) => {
                         eprintln!("{}", e.red());

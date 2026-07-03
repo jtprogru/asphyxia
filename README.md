@@ -127,6 +127,7 @@ Exactly one target source is required — either `-t/--host` or `--stdin` — an
 | `--ports <NAME>` | Scan a named port set: `web`, `mail`, `db`, `remote`, `windows` |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
+| `--retries <N>` | Extra retries per probe on no answer/timeout (default: 0); refused ports are never retried |
 | `-o, --output <FORMAT>` | Output format: `text` (default), `json`, `jsonl`, `csv`, or `grep` |
 | `--output-file <PATH>` (`--oF`) | Write machine-readable output to a file instead of stdout |
 
@@ -155,6 +156,7 @@ asphyxia as -s 192.168.1.0/24 --timeout 300
 | `-r, --range <START> <END>` | Scan an inclusive range of IPs (start and end must share the same family) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
+| `--retries <N>` | Extra retries per probe on no answer/timeout (default: 0); refused ports are never retried |
 | `-o, --output <FORMAT>` | Output format: `text` (default), `json`, `jsonl`, `csv`, or `grep` |
 | `--output-file <PATH>` (`--oF`) | Write machine-readable output to a file instead of stdout |
 
@@ -216,6 +218,7 @@ To tune a scan:
 
 - **`--concurrency`** — raise it to finish large subnets faster (e.g. `--concurrency 512` for a `/22`); lower it if you want a gentler scan. Capped at 1024.
 - **`--timeout`** — on a responsive LAN a shorter timeout (e.g. `--timeout 500`) makes unreachable hosts give up much sooner.
+- **`--retries`** — on a lossy network (Wi-Fi, VPN, distant hosts) a dropped SYN makes an open port or live host look closed/down. A small value like `--retries 1` or `--retries 2` re-probes only when a probe got *no answer* (timeout/unreachable); a port that actively refuses the connection has already answered, so it is never retried and closed-port scans stay fast.
 
 For example, a `/24` with the defaults completes in roughly one timeout window instead of serially walking every address.
 

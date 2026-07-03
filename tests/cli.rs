@@ -189,6 +189,35 @@ fn concurrency_flag_is_accepted() {
 }
 
 #[test]
+fn retries_flag_is_accepted() {
+    // A closed port on loopback returns quickly (refused → no retry), so this
+    // stays fast even with retries requested.
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--retries",
+            "2",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::eq("[]\n"));
+}
+
+#[test]
+fn retries_flag_rejects_non_numeric() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "--retries", "lots"])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn concurrency_flag_rejects_non_numeric() {
     asphyxia()
         .args(["as", "-s", "192.168.1.0/24", "--concurrency", "lots"])
