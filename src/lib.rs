@@ -91,10 +91,12 @@
 //! scanning functions which are optimized for scanning multiple hosts.
 
 pub mod cli;
+pub mod config;
 pub mod output;
 pub mod scanner;
 pub mod utils;
 
+pub use config::Config;
 pub use output::{OutputFormat, ScanRecord, emit, render};
 pub use scanner::address::{
     HostHit, range_addresses, scan_address, scan_address_with_retries, scan_hosts, scan_ip_range,
@@ -105,5 +107,6 @@ pub use scanner::nmap::{nmap_args, run_nmap, split_extra_args};
 /// Re-export commonly used types and functions
 pub use scanner::port::{PortHit, is_resolvable, resolve_host, scan_port, scan_port_with_retries};
 pub use utils::{
-    init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets_from_stdin,
+    init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets,
+    read_targets_from_file, read_targets_from_stdin,
 };

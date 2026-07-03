@@ -31,6 +31,9 @@ Examples:
   asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap
   asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
 
+  # Read targets from a file (hosts, IPs, or CIDRs; one per line)
+  asphyxia ps -i targets.txt --top-ports 100
+
   # Feed live hosts from an address scan straight into a port scan
   asphyxia as -s 192.168.1.0/24 -o jsonl | asphyxia ps --stdin -s 22,80,443
   asphyxia as -s 192.168.1.0/24 -o jsonl | asphyxia ps --stdin --all-ports
@@ -74,6 +77,7 @@ Required arguments:
     -t, --host <HOST>    Target host to scan (e.g., example.com)
     --stdin              Read targets from stdin instead of -t (one host per line, or
                          JSON/JSONL from `asphyxia as -o`); mutually exclusive with -t
+    -i, --target-file <PATH>     Read targets from a file (hosts, IPs, or CIDRs, one per line)
     -r, --range <START> <END>    Scan a range of ports (e.g., 80 443)
     -s, --specific <PORTS>       Scan specific ports (comma-separated, e.g., 22,80,443)
     -a, --all-ports              Scan the entire port range (1-65535)
@@ -94,8 +98,8 @@ pub enum Args {
     #[command(
         name = "ps",
         about = "Start port scanning",
-        // Exactly one target source is required: a `-t` host or `--stdin`.
-        group = ArgGroup::new("target").required(true).args(["host", "stdin"])
+        // Exactly one target source is required: `-t`, `--stdin`, or `-iL`.
+        group = ArgGroup::new("target").required(true).args(["host", "stdin", "target_file"])
     )]
     PortScan {
         /// Target host (e.g., example.com)
@@ -106,6 +110,16 @@ pub enum Args {
         /// JSON/JSONL emitted by `asphyxia as -o` (the `ip` field is used).
         #[arg(long, group = "target")]
         stdin: bool,
+
+        /// Read targets from a file (hosts, IPs, or CIDRs; one per line)
+        #[arg(
+            short = 'i',
+            long = "target-file",
+            visible_alias = "iL",
+            value_name = "PATH",
+            group = "target"
+        )]
+        target_file: Option<PathBuf>,
 
         /// Scan range of ports: start end
         #[arg(short = 'r', long, num_args = 2, group = "ports")]

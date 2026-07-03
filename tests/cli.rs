@@ -267,6 +267,83 @@ fn port_scan_grep_with_no_open_ports_emits_nothing() {
 }
 
 #[test]
+fn target_file_conflicts_with_host() {
+    // --target-file joins the same required target group as -t/--stdin.
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "--target-file",
+            "targets.txt",
+            "-s",
+            "80",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn target_file_reads_targets_from_disk() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("asphyxia-targets-{}.txt", std::process::id()));
+    // One bare IP plus a /31 that expands to two addresses; port 1 is closed on
+    // all of them, so the run just proves the file was read and scanned.
+    std::fs::write(&path, "127.0.0.1\n127.0.0.2/31\n").unwrap();
+
+    asphyxia()
+        .args(["ps", "-i", path.to_str().unwrap(), "-s", "1", "-o", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("[]\n"));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn target_file_missing_reports_a_clear_error() {
+    asphyxia()
+        .args([
+            "ps",
+            "--target-file",
+            "/no/such/asphyxia-targets.txt",
+            "-s",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Could not read target file"));
+}
+
+#[test]
+fn config_supplies_defaults_that_flags_override() {
+    // A config setting the output to json applies when -o is absent; passing -o
+    // csv on the command line must win over it.
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("asphyxia-config-{}.toml", std::process::id()));
+    std::fs::write(&path, "output = \"json\"\ntimeout = 250\n").unwrap();
+
+    // No -o: the config's json format is used (empty array on a closed port).
+    asphyxia()
+        .env("ASPHYXIA_CONFIG", &path)
+        .args(["ps", "-t", "127.0.0.1", "-s", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("[]\n"));
+
+    // Explicit -o csv overrides the config.
+    asphyxia()
+        .env("ASPHYXIA_CONFIG", &path)
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "-o", "csv"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("ip,port,proto,status,latency_ms\n"));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn nmap_args_requires_the_nmap_flag() {
     // --nmap-args without --nmap is a parse error (clap `requires`).
     asphyxia()
