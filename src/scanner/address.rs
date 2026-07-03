@@ -121,6 +121,8 @@ fn probe_address(ip: IpAddr, timeout: Duration) -> Option<HostHit> {
 /// Make a single availability probe against one port. Returns `Some` when the
 /// host answers (open, or refused/reset) and `None` on silence.
 fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> Option<HostHit> {
+    // Respect the global rate limit (no-op when none is installed).
+    crate::rate::gate();
     let start = Instant::now();
     match TcpStream::connect_timeout(&SocketAddr::new(ip, port), timeout) {
         // Port is open: the host is unambiguously up.

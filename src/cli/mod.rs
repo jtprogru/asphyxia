@@ -65,6 +65,10 @@ Examples:
   # Retry probes on a lossy network to cut false negatives (refused ports are not retried)
   asphyxia ps -t example.com --top-ports 1000 --retries 2
 
+  # Cap the scan rate, or pick a timing profile (0 paranoid .. 5 insane)
+  asphyxia ps -t example.com --all-ports --rate 1000
+  asphyxia ps -t example.com --top-ports 1000 -T4
+
   # Emit machine-readable output for a pipeline (text | json | jsonl | csv | grep)
   asphyxia ps -t example.com -s 22,80,443 -o jsonl
   asphyxia as -s 10.0.0.0/24 -o json
@@ -83,6 +87,8 @@ Required arguments:
     -a, --all-ports              Scan the entire port range (1-65535)
     --top-ports <N>              Scan the N most common TCP ports (up to 1000)
     --ports <NAME>               Scan a named port set (web, mail, db, remote, windows)
+    --rate <PPS>                 Cap connection attempts per second (0 = no cap)
+    -T, --timing <0-5>           Timing profile (paranoid..insane) presetting the tunables
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
 
   For address scanning (as):
@@ -174,6 +180,14 @@ pub enum Args {
         #[arg(long, value_name = "N", default_value_t = 0)]
         retries: u32,
 
+        /// Cap connection attempts per second across the whole scan (0 = no cap)
+        #[arg(long, value_name = "PPS")]
+        rate: Option<u32>,
+
+        /// Timing profile 0-5 (paranoid..insane) presetting timeout/concurrency/retries/rate
+        #[arg(short = 'T', long = "timing", value_name = "0-5", value_parser = clap::value_parser!(u8).range(0..=5))]
+        timing: Option<u8>,
+
         /// Output format
         #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
@@ -221,6 +235,14 @@ pub enum Args {
         #[arg(long, value_name = "N", default_value_t = 0)]
         retries: u32,
 
+        /// Cap connection attempts per second across the whole scan (0 = no cap)
+        #[arg(long, value_name = "PPS")]
+        rate: Option<u32>,
+
+        /// Timing profile 0-5 (paranoid..insane) presetting timeout/concurrency/retries/rate
+        #[arg(short = 'T', long = "timing", value_name = "0-5", value_parser = clap::value_parser!(u8).range(0..=5))]
+        timing: Option<u8>,
+
         /// Output format
         #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
@@ -264,6 +286,14 @@ impl Args {
     pub fn retries(&self) -> u32 {
         match self {
             Args::PortScan { retries, .. } | Args::AddressScan { retries, .. } => *retries,
+        }
+    }
+
+    /// The probes-per-second cap, if any, regardless of which subcommand was
+    /// invoked.
+    pub fn rate(&self) -> Option<u32> {
+        match self {
+            Args::PortScan { rate, .. } | Args::AddressScan { rate, .. } => *rate,
         }
     }
 }

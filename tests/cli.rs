@@ -218,6 +218,74 @@ fn retries_flag_rejects_non_numeric() {
 }
 
 #[test]
+fn timing_profile_out_of_range_is_rejected() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "-T", "9"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn timing_profile_is_accepted() {
+    // -T4 is a valid preset; a closed port keeps the run fast.
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "-T", "4", "-o", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("[]\n"));
+}
+
+#[test]
+fn rate_flag_is_accepted() {
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--rate",
+            "1000",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::eq("[]\n"));
+}
+
+#[test]
+fn rate_limit_paces_multiple_probes() {
+    use std::time::Instant;
+    // Scan several closed ports on loopback at 20 probes/sec. Refused ports
+    // return instantly, so without pacing this finishes in milliseconds; the
+    // rate limit forces it to take at least a few slots (~200ms for 5 probes).
+    let start = Instant::now();
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1,2,3,4,5",
+            "--rate",
+            "20",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success();
+    let elapsed = start.elapsed();
+    // 5 probes at 20/sec span 4 intervals of 50ms = 200ms minimum for the
+    // probes themselves; allow generous slack for process startup jitter.
+    assert!(
+        elapsed >= std::time::Duration::from_millis(150),
+        "rate limit should pace the scan, took {:?}",
+        elapsed
+    );
+}
+
+#[test]
 fn concurrency_flag_rejects_non_numeric() {
     asphyxia()
         .args(["as", "-s", "192.168.1.0/24", "--concurrency", "lots"])

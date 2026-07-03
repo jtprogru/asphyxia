@@ -30,6 +30,8 @@ pub struct Config {
     pub concurrency: Option<usize>,
     /// Extra retries per probe on no answer.
     pub retries: Option<u32>,
+    /// Probes-per-second cap across the whole scan (0 = no cap).
+    pub rate: Option<u32>,
     /// Output format name (`text`, `json`, `jsonl`, `csv`, `grep`).
     pub output: Option<String>,
 }
