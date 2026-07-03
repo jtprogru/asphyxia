@@ -13,7 +13,7 @@ use asphyxia::output::{OutputFormat, ScanRecord, emit};
 use asphyxia::rate;
 use asphyxia::scanner::exclude::ExcludeSet;
 use asphyxia::scanner::well_known::{named_port_set, top_ports};
-use asphyxia::scanner::{address, nmap, port};
+use asphyxia::scanner::{address, nmap, port, service};
 use asphyxia::timing;
 use asphyxia::utils::{
     init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets_from_file,
@@ -28,6 +28,10 @@ struct Finding {
     /// `"open"` (TCP, or a UDP port that replied) or `"open|filtered"` (a silent
     /// UDP port).
     status: &'static str,
+    /// Detected service, when `--sV` is on and identification succeeded.
+    service: Option<String>,
+    /// Raw service banner, when `--sV` is on and one was grabbed.
+    banner: Option<String>,
 }
 
 /// Mark every address as up without probing, for `-Pn` (skip discovery). The
@@ -231,13 +235,17 @@ fn main() {
             exclude_ports,
             exclude_cdn,
             udp,
+            service_detection,
             nmap,
             nmap_args,
             timeout,
             ..
         } => {
-            let timeout = Some(Duration::from_millis(timeout));
+            let connect_timeout = Duration::from_millis(timeout);
+            let timeout = Some(connect_timeout);
             let proto = if udp { "udp" } else { "tcp" };
+            // Service detection only makes sense over a TCP stream.
+            let detect_service = service_detection && !udp;
 
             let mut ports: Vec<u16> = if all_ports {
                 (1..=u16::MAX).collect()
@@ -407,15 +415,28 @@ fn main() {
                             port: hit.port,
                             latency: hit.latency,
                             status: if hit.open { "open" } else { "open|filtered" },
+                            service: None,
+                            banner: None,
                         })
                     } else {
-                        port::scan_port_with_retries(ip, port, timeout, retries).map(|hit| {
-                            Finding {
-                                port: hit.port,
-                                latency: hit.latency,
-                                status: "open",
-                            }
-                        })
+                        port::scan_port_with_retries(ip.clone(), port, timeout, retries).map(
+                            |hit| {
+                                // For an open TCP port, optionally grab a banner and
+                                // identify the service.
+                                let (service, banner) = if detect_service {
+                                    service::detect(&ip, hit.port, connect_timeout)
+                                } else {
+                                    (None, None)
+                                };
+                                Finding {
+                                    port: hit.port,
+                                    latency: hit.latency,
+                                    status: "open",
+                                    service,
+                                    banner,
+                                }
+                            },
+                        )
                     };
                     pb.inc(1);
                     finding.map(|f| (i, f))
@@ -440,22 +461,25 @@ fn main() {
                                 );
                                 current = Some(*i);
                             }
-                            // Show the status only when it carries information
-                            // beyond "open" (i.e. UDP open|filtered).
-                            if f.status == "open" {
-                                println!(
-                                    "{}:{}",
-                                    host.bright_cyan(),
-                                    f.port.to_string().bright_green()
-                                );
-                            } else {
-                                println!(
-                                    "{}:{} {}",
-                                    host.bright_cyan(),
-                                    f.port.to_string().bright_green(),
-                                    f.status.yellow()
-                                );
+                            // Base line is host:port; annotate with the status
+                            // when it carries information beyond "open" (UDP
+                            // open|filtered), and with the service/banner when
+                            // --sV identified one.
+                            let mut line = format!(
+                                "{}:{}",
+                                host.bright_cyan(),
+                                f.port.to_string().bright_green()
+                            );
+                            if f.status != "open" {
+                                line.push_str(&format!(" {}", f.status.yellow()));
                             }
+                            if let Some(service) = &f.service {
+                                line.push_str(&format!(" {}", service.bright_magenta()));
+                            }
+                            if let Some(banner) = &f.banner {
+                                line.push_str(&format!(" {}", format!("[{}]", banner).dimmed()));
+                            }
+                            println!("{}", line);
                         }
                     } else {
                         println!("\n{}", "No open ports found 😕".yellow());
@@ -472,6 +496,8 @@ fn main() {
                             proto,
                             latency_ms: f.latency.as_millis(),
                             status: f.status,
+                            service: f.service.clone(),
+                            banner: f.banner.clone(),
                         })
                         .collect();
                     if let Err(e) = emit(&records, format, output_file.as_deref()) {
@@ -617,6 +643,8 @@ fn main() {
                             proto: "tcp",
                             latency_ms: hit.latency.as_millis(),
                             status: "up",
+                            service: None,
+                            banner: None,
                         })
                         .collect();
                     if let Err(e) = emit(&records, format, output_file.as_deref()) {

@@ -412,6 +412,48 @@ fn config_supplies_defaults_that_flags_override() {
 }
 
 #[test]
+fn service_detection_reports_service_and_banner() {
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::thread;
+
+    // A local server that greets like SSH on connect; --sV should identify it
+    // and surface the banner in the JSONL record.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    // The scan makes one probe connection to confirm the port is open, then
+    // --sV makes a second to grab the banner; greet both.
+    let handle = thread::spawn(move || {
+        for _ in 0..2 {
+            match listener.accept() {
+                Ok((mut sock, _)) => {
+                    let _ = sock.write_all(b"SSH-2.0-OpenSSH_9.6\r\n");
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            &port.to_string(),
+            "--sV",
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"service\":\"ssh\""))
+        .stdout(predicate::str::contains("SSH-2.0-OpenSSH_9.6"));
+
+    let _ = handle.join();
+}
+
+#[test]
 fn udp_scan_reports_proto_udp_in_json() {
     // A UDP probe to a closed loopback port typically draws an ICMP
     // port-unreachable (closed → not reported) or stays silent

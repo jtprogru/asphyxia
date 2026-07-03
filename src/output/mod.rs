@@ -59,6 +59,12 @@ pub struct ScanRecord {
     pub latency_ms: u128,
     /// `"open"` for an open port, `"up"` for an available host.
     pub status: &'static str,
+    /// Detected service (from `--sV`), omitted when unknown or not requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// Raw service banner (from `--sV`), omitted when none was grabbed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banner: Option<String>,
 }
 
 /// Render `records` in a machine-readable `format` into a single string.
@@ -156,6 +162,8 @@ mod tests {
                 proto: "tcp",
                 latency_ms: 3,
                 status: "open",
+                service: None,
+                banner: None,
             },
             ScanRecord {
                 ip: "10.0.0.5".to_string(),
@@ -163,6 +171,8 @@ mod tests {
                 proto: "tcp",
                 latency_ms: 12,
                 status: "up",
+                service: None,
+                banner: None,
             },
         ]
     }

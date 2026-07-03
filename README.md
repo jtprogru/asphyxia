@@ -110,6 +110,9 @@ asphyxia ps -t example.com --top-ports 1000
 # Scan UDP ports instead of TCP (DNS, NTP, SNMP, …)
 asphyxia ps -t example.com -s 53,123,161 --udp
 
+# Grab banners and identify services on open ports
+asphyxia ps -t example.com -s 22,80,443 --sV
+
 # Scan a named port set (web, mail, db, remote, windows)
 asphyxia ps -t example.com --ports web
 
@@ -142,6 +145,7 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `-s, --specific <PORTS>` | Scan specific comma-separated ports |
 | `-a, --all-ports` | Scan the entire port range (1-65535) |
 | `-u, --udp` | Scan UDP ports instead of TCP (results are `open` or `open\|filtered`) |
+| `--sV` (`--banner`) | Grab banners and identify the service on each open TCP port |
 | `--top-ports <N>` | Scan the `N` most common TCP ports (frequency-ordered, up to 1000) |
 | `--ports <NAME>` | Scan a named port set: `web`, `mail`, `db`, `remote`, `windows` |
 | `--exclude-ports <PORTS>` | Remove these comma-separated ports from the scan set |
@@ -169,6 +173,18 @@ A port that answers with an ICMP port-unreachable is **closed** and is simply no
 asphyxia ps -t 192.168.1.1 -s 53,123,161 --udp
 asphyxia ps -t 192.168.1.1 -s 53,123,161 --udp -o jsonl
 # {"ip":"192.168.1.1","port":53,"proto":"udp","latency_ms":4,"status":"open"}
+```
+
+#### Service & version detection (`--sV`)
+
+Add `--sV` (alias `--banner`) to identify what is listening on each open TCP port. For every open port asphyxia grabs a small banner — reading whatever the service announces on connect (SSH, SMTP, FTP), and nudging quiet services with a minimal HTTP request — then matches it against a compact set of built-in signatures (SSH, HTTP, SMTP, FTP, POP3/IMAP, MySQL, Redis, …). When no banner can be matched it falls back to the well-known name for the port.
+
+This is a lightweight identifier, not a full nmap-service-probes database — for exhaustive detection, combine it with `--nmap`. In machine output the `service` and `banner` fields are added to each record (omitted when nothing was found); in text output they are shown next to the port.
+
+```bash
+asphyxia ps -t example.com -s 22,80,443 --sV
+asphyxia ps -t example.com --top-ports 100 --sV -o jsonl
+# {"ip":"93.184.216.34","port":22,"proto":"tcp","latency_ms":7,"status":"open","service":"ssh","banner":"SSH-2.0-OpenSSH_9.6"}
 ```
 
 ### Address scanning (`as`)
