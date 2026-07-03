@@ -30,6 +30,9 @@ Examples:
   # Scan UDP ports instead of TCP (open or open|filtered)
   asphyxia ps -t example.com -s 53,123,161 --udp
 
+  # SYN/stealth scan via raw sockets (needs root/CAP_NET_RAW)
+  sudo asphyxia ps -t example.com --top-ports 1000 --syn
+
   # Grab banners and identify services on open ports
   asphyxia ps -t example.com -s 22,80,443 --sV
 
@@ -97,6 +100,7 @@ Required arguments:
     --top-ports <N>              Scan the N most common TCP ports (up to 1000)
     --ports <NAME>               Scan a named port set (web, mail, db, remote, windows)
     -u, --udp                    Scan UDP ports instead of TCP (open or open|filtered)
+    --syn                        SYN/stealth scan via raw sockets (needs root; else connect)
     --sV                         Grab banners and identify the service on each open port
     --resume <PATH>              Checkpoint progress and resume from PATH if it exists
     --rate <PPS>                 Cap connection attempts per second (0 = no cap)
@@ -170,6 +174,10 @@ pub enum Args {
         /// Scan UDP ports instead of TCP (results are open or open|filtered)
         #[arg(short = 'u', long = "udp")]
         udp: bool,
+
+        /// SYN/stealth scan via raw sockets (needs root/CAP_NET_RAW; else falls back to connect)
+        #[arg(long = "syn", conflicts_with = "udp")]
+        syn: bool,
 
         /// Grab banners and identify the service on each open port (TCP only)
         #[arg(long = "sV", visible_alias = "banner")]

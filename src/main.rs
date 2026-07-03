@@ -14,7 +14,7 @@ use asphyxia::rate;
 use asphyxia::resume::{ScanState, StateFinding};
 use asphyxia::scanner::exclude::ExcludeSet;
 use asphyxia::scanner::well_known::{named_port_set, top_ports};
-use asphyxia::scanner::{address, nmap, port, service};
+use asphyxia::scanner::{address, nmap, port, service, syn};
 use asphyxia::timing;
 use asphyxia::utils::{
     init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets_from_file,
@@ -140,6 +140,10 @@ fn status_str(status: &str) -> &'static str {
 /// Probe a single `(ip, port)` job, returning a [`Finding`] when the port is
 /// reportable. TCP yields only open ports (optionally with a grabbed banner);
 /// UDP also yields open|filtered.
+///
+/// With `use_syn`, an IPv4 TCP target is probed with a raw-socket SYN first; a
+/// definitive open/closed result is used directly, while a filtered/unavailable
+/// result falls through to a normal connect probe so nothing open is missed.
 #[allow(clippy::too_many_arguments)]
 fn scan_one(
     udp: bool,
@@ -149,31 +153,55 @@ fn scan_one(
     connect_timeout: Duration,
     retries: u32,
     detect_service: bool,
+    use_syn: bool,
 ) -> Option<Finding> {
     if udp {
-        port::scan_udp_port(ip, port, timeout, retries).map(|hit| Finding {
+        return port::scan_udp_port(ip, port, timeout, retries).map(|hit| Finding {
             port: hit.port,
             latency: hit.latency,
             status: if hit.open { "open" } else { "open|filtered" },
             service: None,
             banner: None,
-        })
-    } else {
-        port::scan_port_with_retries(ip.clone(), port, timeout, retries).map(|hit| {
-            let (service, banner) = if detect_service {
-                service::detect(&ip, hit.port, connect_timeout)
-            } else {
-                (None, None)
-            };
-            Finding {
-                port: hit.port,
-                latency: hit.latency,
-                status: "open",
-                service,
-                banner,
-            }
-        })
+        });
     }
+
+    // SYN pre-check for IPv4: use a definitive answer, else fall through.
+    if use_syn && let Ok(v4) = ip.parse::<std::net::Ipv4Addr>() {
+        match syn::syn_scan_port(v4, port, connect_timeout) {
+            Some(syn::SynOutcome::Open) => {
+                let (service, banner) = if detect_service {
+                    service::detect(&ip, port, connect_timeout)
+                } else {
+                    (None, None)
+                };
+                return Some(Finding {
+                    port,
+                    latency: Duration::ZERO,
+                    status: "open",
+                    service,
+                    banner,
+                });
+            }
+            Some(syn::SynOutcome::Closed) => return None,
+            // Filtered, or raw socket unusable: fall back to a connect probe.
+            Some(syn::SynOutcome::Filtered) | None => {}
+        }
+    }
+
+    port::scan_port_with_retries(ip.clone(), port, timeout, retries).map(|hit| {
+        let (service, banner) = if detect_service {
+            service::detect(&ip, hit.port, connect_timeout)
+        } else {
+            (None, None)
+        };
+        Finding {
+            port: hit.port,
+            latency: hit.latency,
+            status: "open",
+            service,
+            banner,
+        }
+    })
 }
 
 /// Run a port scan that checkpoints to `state_path` and resumes from it.
@@ -193,6 +221,7 @@ fn run_resumable_port_scan(
     connect_timeout: Duration,
     retries: u32,
     detect_service: bool,
+    use_syn: bool,
     state_path: &Path,
     pb: &indicatif::ProgressBar,
 ) -> Vec<(usize, Finding)> {
@@ -240,6 +269,7 @@ fn run_resumable_port_scan(
             connect_timeout,
             retries,
             detect_service,
+            use_syn,
         );
         let recorded = finding.as_ref().map(|f| StateFinding {
             host: *i,
@@ -391,6 +421,7 @@ fn main() {
             exclude_ports,
             exclude_cdn,
             udp,
+            syn,
             service_detection,
             resume,
             nmap,
@@ -403,6 +434,22 @@ fn main() {
             let proto = if udp { "udp" } else { "tcp" };
             // Service detection only makes sense over a TCP stream.
             let detect_service = service_detection && !udp;
+
+            // SYN scanning needs a raw socket (root / CAP_NET_RAW). When asked
+            // for but unavailable, warn once and fall back to the connect scan.
+            let use_syn = if syn && !udp {
+                if syn::raw_socket_available() {
+                    true
+                } else {
+                    eprintln!(
+                        "{}",
+                        "SYN scan needs root/CAP_NET_RAW — falling back to connect scan".yellow()
+                    );
+                    false
+                }
+            } else {
+                false
+            };
 
             let mut ports: Vec<u16> = if all_ports {
                 (1..=u16::MAX).collect()
@@ -576,6 +623,7 @@ fn main() {
                     connect_timeout,
                     retries,
                     detect_service,
+                    use_syn,
                     state_path,
                     &pb,
                 )
@@ -591,6 +639,7 @@ fn main() {
                             connect_timeout,
                             retries,
                             detect_service,
+                            use_syn,
                         );
                         pb.inc(1);
                         finding.map(|f| (i, f))
