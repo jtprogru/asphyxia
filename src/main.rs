@@ -20,6 +20,16 @@ use asphyxia::utils::{
     read_targets_from_stdin,
 };
 
+/// One reportable port result, normalised across TCP and UDP so the output
+/// path does not care which protocol produced it.
+struct Finding {
+    port: u16,
+    latency: Duration,
+    /// `"open"` (TCP, or a UDP port that replied) or `"open|filtered"` (a silent
+    /// UDP port).
+    status: &'static str,
+}
+
 /// Mark every address as up without probing, for `-Pn` (skip discovery). The
 /// latency is zero since no probe was sent.
 fn all_up(addrs: Vec<IpAddr>) -> Vec<address::HostHit> {
@@ -55,11 +65,7 @@ fn build_exclude_set(specs: &[String], file: Option<&Path>) -> Result<ExcludeSet
 ///
 /// A missing nmap binary is reported once with an install hint rather than
 /// failing per host; any other spawn error is surfaced per host.
-fn run_nmap_handoff(
-    resolved: &[(String, String)],
-    opened: &[(usize, port::PortHit)],
-    extra: &[String],
-) {
+fn run_nmap_handoff(resolved: &[(String, String)], opened: &[(usize, Finding)], extra: &[String]) {
     use std::io::ErrorKind;
 
     // `opened` is already sorted by (host index, port), so consecutive runs of
@@ -224,12 +230,14 @@ fn main() {
             port_set,
             exclude_ports,
             exclude_cdn,
+            udp,
             nmap,
             nmap_args,
             timeout,
             ..
         } => {
             let timeout = Some(Duration::from_millis(timeout));
+            let proto = if udp { "udp" } else { "tcp" };
 
             let mut ports: Vec<u16> = if all_ports {
                 (1..=u16::MAX).collect()
@@ -388,25 +396,41 @@ fn main() {
 
             let pb = progress_bar(jobs.len() as u64, "ports scanned");
 
-            let mut opened: Vec<(usize, port::PortHit)> = jobs
+            // Probe every (host, port) pair. TCP yields only open ports; UDP also
+            // reports open|filtered (silent) ports, since silence is meaningful.
+            let mut opened: Vec<(usize, Finding)> = jobs
                 .into_par_iter()
                 .filter_map(|(i, port)| {
-                    let hit =
-                        port::scan_port_with_retries(resolved[i].1.clone(), port, timeout, retries);
+                    let ip = resolved[i].1.clone();
+                    let finding = if udp {
+                        port::scan_udp_port(ip, port, timeout, retries).map(|hit| Finding {
+                            port: hit.port,
+                            latency: hit.latency,
+                            status: if hit.open { "open" } else { "open|filtered" },
+                        })
+                    } else {
+                        port::scan_port_with_retries(ip, port, timeout, retries).map(|hit| {
+                            Finding {
+                                port: hit.port,
+                                latency: hit.latency,
+                                status: "open",
+                            }
+                        })
+                    };
                     pb.inc(1);
-                    hit.map(|hit| (i, hit))
+                    finding.map(|f| (i, f))
                 })
                 .collect();
 
             pb.finish_with_message("Scan completed");
 
-            opened.sort_by_key(|(i, hit)| (*i, hit.port));
+            opened.sort_by_key(|(i, f)| (*i, f.port));
 
             match format {
                 OutputFormat::Text => {
                     if !opened.is_empty() {
                         let mut current: Option<usize> = None;
-                        for (i, hit) in &opened {
+                        for (i, f) in &opened {
                             let host = &resolved[*i].0;
                             if current != Some(*i) {
                                 println!(
@@ -416,11 +440,22 @@ fn main() {
                                 );
                                 current = Some(*i);
                             }
-                            println!(
-                                "{}:{}",
-                                host.bright_cyan(),
-                                hit.port.to_string().bright_green()
-                            );
+                            // Show the status only when it carries information
+                            // beyond "open" (i.e. UDP open|filtered).
+                            if f.status == "open" {
+                                println!(
+                                    "{}:{}",
+                                    host.bright_cyan(),
+                                    f.port.to_string().bright_green()
+                                );
+                            } else {
+                                println!(
+                                    "{}:{} {}",
+                                    host.bright_cyan(),
+                                    f.port.to_string().bright_green(),
+                                    f.status.yellow()
+                                );
+                            }
                         }
                     } else {
                         println!("\n{}", "No open ports found 😕".yellow());
@@ -431,12 +466,12 @@ fn main() {
                 _ => {
                     let records: Vec<ScanRecord> = opened
                         .iter()
-                        .map(|(i, hit)| ScanRecord {
+                        .map(|(i, f)| ScanRecord {
                             ip: resolved[*i].1.clone(),
-                            port: Some(hit.port),
-                            proto: "tcp",
-                            latency_ms: hit.latency.as_millis(),
-                            status: "open",
+                            port: Some(f.port),
+                            proto,
+                            latency_ms: f.latency.as_millis(),
+                            status: f.status,
                         })
                         .collect();
                     if let Err(e) = emit(&records, format, output_file.as_deref()) {

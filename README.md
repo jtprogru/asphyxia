@@ -107,6 +107,9 @@ asphyxia ps -t example.com --all-ports
 asphyxia ps -t example.com --top-ports 100
 asphyxia ps -t example.com --top-ports 1000
 
+# Scan UDP ports instead of TCP (DNS, NTP, SNMP, …)
+asphyxia ps -t example.com -s 53,123,161 --udp
+
 # Scan a named port set (web, mail, db, remote, windows)
 asphyxia ps -t example.com --ports web
 
@@ -138,6 +141,7 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `-r, --range <START> <END>` | Scan an inclusive range of ports |
 | `-s, --specific <PORTS>` | Scan specific comma-separated ports |
 | `-a, --all-ports` | Scan the entire port range (1-65535) |
+| `-u, --udp` | Scan UDP ports instead of TCP (results are `open` or `open\|filtered`) |
 | `--top-ports <N>` | Scan the `N` most common TCP ports (frequency-ordered, up to 1000) |
 | `--ports <NAME>` | Scan a named port set: `web`, `mail`, `db`, `remote`, `windows` |
 | `--exclude-ports <PORTS>` | Remove these comma-separated ports from the scan set |
@@ -151,6 +155,21 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `-T, --timing <0-5>` | Timing profile from `0` (paranoid) to `5` (insane), presetting timeout/concurrency/retries/rate |
 | `-o, --output <FORMAT>` | Output format: `text` (default), `json`, `jsonl`, `csv`, or `grep` |
 | `--output-file <PATH>` (`--oF`) | Write machine-readable output to a file instead of stdout |
+
+#### UDP scanning (`--udp`)
+
+Pass `-u`/`--udp` to probe UDP ports instead of TCP. UDP has no handshake, so results are inherently less certain than TCP and use two statuses:
+
+- **`open`** — the port sent a reply. For a few well-known ports asphyxia sends a protocol-specific probe (a DNS query on 53, an NTP client request on 123) to coax a reply and turn what would otherwise be a guess into a definite `open`.
+- **`open|filtered`** — the port stayed silent within the timeout. The datagram may have been dropped, the service may not answer this particular probe, or a firewall may be filtering it — these are indistinguishable without elevated privileges.
+
+A port that answers with an ICMP port-unreachable is **closed** and is simply not reported (like a closed TCP port). In machine output the `proto` field is `"udp"` and `status` is `"open"` or `"open|filtered"`. Because silent ports wait out the full `--timeout`, UDP scans of many ports are slower than TCP — narrow the port set (e.g. `-s 53,123,161,500` or `--top-ports`) and consider `--retries 1` on a lossy link.
+
+```bash
+asphyxia ps -t 192.168.1.1 -s 53,123,161 --udp
+asphyxia ps -t 192.168.1.1 -s 53,123,161 --udp -o jsonl
+# {"ip":"192.168.1.1","port":53,"proto":"udp","latency_ms":4,"status":"open"}
+```
 
 ### Address scanning (`as`)
 
