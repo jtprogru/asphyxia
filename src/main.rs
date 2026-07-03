@@ -2,17 +2,20 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::parser::ValueSource;
+use clap::{ArgMatches, CommandFactory, FromArgMatches};
 use owo_colors::OwoColorize;
 use rayon::prelude::*;
 
 use asphyxia::cli::Args;
+use asphyxia::config::Config;
 use asphyxia::output::{OutputFormat, ScanRecord, emit};
 use asphyxia::scanner::exclude::ExcludeSet;
 use asphyxia::scanner::well_known::{named_port_set, top_ports};
 use asphyxia::scanner::{address, nmap, port};
 use asphyxia::utils::{
-    init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets_from_stdin,
+    init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets_from_file,
+    read_targets_from_stdin,
 };
 
 /// Mark every address as up without probing, for `-Pn` (skip discovery). The
@@ -112,8 +115,61 @@ fn scan_filtered(
     }
 }
 
+/// Apply `~/.asphyxia.toml` defaults to `args`, but only for options the user
+/// did not pass on the command line — so CLI flags always win over the config.
+///
+/// The user's intent is read from clap's value source: an option whose value
+/// came from a `default_value` (not the command line) is eligible to be
+/// overridden by the config.
+fn apply_config(args: &mut Args, matches: &ArgMatches, config: &Config) {
+    let Some((_, sub)) = matches.subcommand() else {
+        return;
+    };
+    let from_cli = |id: &str| matches!(sub.value_source(id), Some(ValueSource::CommandLine));
+
+    match args {
+        Args::PortScan {
+            timeout,
+            concurrency,
+            retries,
+            output,
+            ..
+        }
+        | Args::AddressScan {
+            timeout,
+            concurrency,
+            retries,
+            output,
+            ..
+        } => {
+            if !from_cli("timeout")
+                && let Some(v) = config.timeout
+            {
+                *timeout = v;
+            }
+            if !from_cli("concurrency")
+                && let Some(v) = config.concurrency
+            {
+                *concurrency = v;
+            }
+            if !from_cli("retries")
+                && let Some(v) = config.retries
+            {
+                *retries = v;
+            }
+            if !from_cli("output")
+                && let Some(v) = config.output_format()
+            {
+                *output = v;
+            }
+        }
+    }
+}
+
 fn main() {
-    let args = Args::parse();
+    let matches = Args::command().get_matches();
+    let mut args = Args::from_arg_matches(&matches).expect("clap builds valid Args");
+    apply_config(&mut args, &matches, &Config::load());
 
     // Size the global rayon pool for I/O-bound scanning before any scan runs.
     init_scan_pool(args.concurrency());
@@ -126,6 +182,7 @@ fn main() {
         Args::PortScan {
             host,
             stdin,
+            target_file,
             range,
             specific,
             all_ports,
@@ -213,8 +270,9 @@ fn main() {
                 .filter(|p| *p == 80 || *p == 443)
                 .collect();
 
-            // Gather the raw targets: either the single `-t` host, or a batch
-            // read from stdin (clap guarantees exactly one of the two is set).
+            // Gather the raw targets from exactly one source: a single `-t`
+            // host, a batch from stdin, or a batch from a `-iL` file (clap's
+            // required `target` group guarantees precisely one is set).
             let targets: Vec<String> = if stdin {
                 let targets = read_targets_from_stdin();
                 if targets.is_empty() {
@@ -222,9 +280,27 @@ fn main() {
                     return;
                 }
                 targets
+            } else if let Some(path) = target_file {
+                match read_targets_from_file(&path) {
+                    Ok(targets) if targets.is_empty() => {
+                        eprintln!(
+                            "{}",
+                            format!("No targets read from file: {}", path.display()).yellow()
+                        );
+                        return;
+                    }
+                    Ok(targets) => targets,
+                    Err(e) => {
+                        eprintln!(
+                            "{}",
+                            format!("Could not read target file {}: {}", path.display(), e).red()
+                        );
+                        return;
+                    }
+                }
             } else {
-                // clap's required `target` group guarantees `host` is present.
-                vec![host.expect("clap enforces --host when --stdin is absent")]
+                // With neither --stdin nor -iL, clap guarantees `host` is set.
+                vec![host.expect("clap enforces --host when --stdin/-iL are absent")]
             };
 
             // Resolve each target to an IP once, so the parallel scan below does

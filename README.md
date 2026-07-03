@@ -26,6 +26,9 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Colorized output** — readable, colored terminal output.
 - **Machine-readable output** — emit results as JSON, JSON Lines, CSV, or greppable text with `--output`, and write them straight to a file with `--output-file`, for piping into other tools.
 
+- **Target sources** — scan a single host, pipe targets in with `--stdin`, or read them from a file with `-i/--target-file`; hosts, IPs, and CIDRs are all accepted, and CIDRs in a file are expanded.
+- **Configuration file** — set defaults (timeout, concurrency, retries, output format) in `~/.asphyxia.toml`; command-line flags override it.
+
 > Note: IPv6 subnet and range scans are capped at 65 536 addresses (e.g. a `/112`), since larger IPv6 spaces are impractical to walk exhaustively.
 
 ## Installation
@@ -120,14 +123,18 @@ asphyxia ps -t 2001:db8::1 -s 22,80,443 --timeout 500
 
 # Read targets from stdin instead of -t (one host per line, or JSON/JSONL from `as`)
 asphyxia ps --stdin -s 22,80,443 < hosts.txt
+
+# Read targets from a file (hosts, IPs, or CIDRs; CIDRs are expanded)
+asphyxia ps -i targets.txt --top-ports 100
 ```
 
-Exactly one target source is required — either `-t/--host` or `--stdin` — and they are mutually exclusive. Likewise `-r`, `-s`, `--all-ports`, `--top-ports`, and `--ports` are mutually exclusive.
+Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--target-file` — and they are mutually exclusive. Likewise `-r`, `-s`, `--all-ports`, `--top-ports`, and `--ports` are mutually exclusive.
 
 | Flag | Description |
 |------|-------------|
 | `-t, --host <HOST>` | Target host (hostname, IPv4, or IPv6) |
 | `--stdin` | Read targets from stdin instead of `-t`: one host per line, or the JSON/JSONL emitted by `asphyxia as -o` (the `ip` field is used) |
+| `-i, --target-file <PATH>` (`--iL`) | Read targets from a file: hosts, IPs, CIDRs (expanded), or `as` JSON/JSONL, one per line |
 | `-r, --range <START> <END>` | Scan an inclusive range of ports |
 | `-s, --specific <PORTS>` | Scan specific comma-separated ports |
 | `-a, --all-ports` | Scan the entire port range (1-65535) |
@@ -247,6 +254,20 @@ asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
 ```
 
 By default asphyxia runs `nmap -sV -sC -p <open-ports> <host>`. With `--nmap-args` your flags replace `-sV -sC`, while asphyxia still supplies `-p <open-ports>` and the target. If nmap is not on your `PATH`, asphyxia prints an install hint instead of a deep dive. Nmap's output streams straight to the terminal, so combine `--nmap` with the human (`text`) output rather than a machine format.
+
+## Configuration file (`~/.asphyxia.toml`)
+
+For repeated runs you can set defaults in `~/.asphyxia.toml` instead of retyping the same flags. Every key is optional; anything you omit keeps its built-in default. Command-line flags always override the config.
+
+```toml
+# ~/.asphyxia.toml
+timeout     = 500     # per-connection timeout in ms
+concurrency = 512     # max concurrent connection attempts
+retries     = 1       # extra retries per probe on no answer
+output      = "jsonl" # default output format: text | json | jsonl | csv | grep
+```
+
+With that config, `asphyxia ps -t example.com --top-ports 100` runs with a 500 ms timeout, 512-way concurrency, one retry, and JSONL output — while `asphyxia ps -t example.com --top-ports 100 -o text --timeout 2000` overrides both the format and the timeout for that run. Point `ASPHYXIA_CONFIG` at a different path to use an alternate file. An invalid config is reported on stderr and then ignored rather than aborting the scan.
 
 ## Performance
 
