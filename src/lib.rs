@@ -94,12 +94,14 @@ pub mod cli;
 pub mod config;
 pub mod output;
 pub mod rate;
+pub mod resume;
 pub mod scanner;
 pub mod timing;
 pub mod utils;
 
 pub use config::Config;
 pub use output::{OutputFormat, ScanRecord, emit, render};
+pub use resume::{ScanState, StateFinding};
 pub use scanner::address::{
     HostHit, range_addresses, scan_address, scan_address_with_retries, scan_hosts, scan_ip_range,
     scan_ip_range_with_retries, scan_subnet, scan_subnet_with_retries, subnet_addresses,

@@ -33,6 +33,9 @@ Examples:
   # Grab banners and identify services on open ports
   asphyxia ps -t example.com -s 22,80,443 --sV
 
+  # Checkpoint a long scan and resume it after an interruption
+  asphyxia ps -iL targets.txt --all-ports --resume scan.state
+
   # Find open ports fast, then hand them to nmap for a deep dive
   asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap
   asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
@@ -95,6 +98,7 @@ Required arguments:
     --ports <NAME>               Scan a named port set (web, mail, db, remote, windows)
     -u, --udp                    Scan UDP ports instead of TCP (open or open|filtered)
     --sV                         Grab banners and identify the service on each open port
+    --resume <PATH>              Checkpoint progress and resume from PATH if it exists
     --rate <PPS>                 Cap connection attempts per second (0 = no cap)
     -T, --timing <0-5>           Timing profile (paranoid..insane) presetting the tunables
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
@@ -170,6 +174,10 @@ pub enum Args {
         /// Grab banners and identify the service on each open port (TCP only)
         #[arg(long = "sV", visible_alias = "banner")]
         service_detection: bool,
+
+        /// Checkpoint progress to a file and resume from it if it already exists
+        #[arg(long = "resume", value_name = "PATH")]
+        resume: Option<PathBuf>,
 
         /// After the scan, run nmap on each host's open ports for a deep dive
         #[arg(long = "nmap")]
