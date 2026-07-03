@@ -30,6 +30,9 @@ Examples:
   # Scan UDP ports instead of TCP (open or open|filtered)
   asphyxia ps -t example.com -s 53,123,161 --udp
 
+  # Grab banners and identify services on open ports
+  asphyxia ps -t example.com -s 22,80,443 --sV
+
   # Find open ports fast, then hand them to nmap for a deep dive
   asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap
   asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
@@ -91,6 +94,7 @@ Required arguments:
     --top-ports <N>              Scan the N most common TCP ports (up to 1000)
     --ports <NAME>               Scan a named port set (web, mail, db, remote, windows)
     -u, --udp                    Scan UDP ports instead of TCP (open or open|filtered)
+    --sV                         Grab banners and identify the service on each open port
     --rate <PPS>                 Cap connection attempts per second (0 = no cap)
     -T, --timing <0-5>           Timing profile (paranoid..insane) presetting the tunables
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
@@ -162,6 +166,10 @@ pub enum Args {
         /// Scan UDP ports instead of TCP (results are open or open|filtered)
         #[arg(short = 'u', long = "udp")]
         udp: bool,
+
+        /// Grab banners and identify the service on each open port (TCP only)
+        #[arg(long = "sV", visible_alias = "banner")]
+        service_detection: bool,
 
         /// After the scan, run nmap on each host's open ports for a deep dive
         #[arg(long = "nmap")]

@@ -110,6 +110,7 @@ pub use scanner::nmap::{nmap_args, run_nmap, split_extra_args};
 pub use scanner::port::{
     PortHit, UdpHit, is_resolvable, resolve_host, scan_port, scan_port_with_retries, scan_udp_port,
 };
+pub use scanner::service::{detect as detect_service, match_service, service_by_port};
 pub use utils::{
     init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets,
     read_targets_from_file, read_targets_from_stdin,
