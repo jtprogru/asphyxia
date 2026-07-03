@@ -145,6 +145,24 @@ fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> Option<HostHit> {
     }
 }
 
+/// Scan an explicit list of addresses in parallel and return the ones that are
+/// available, sorted ascending.
+///
+/// This is the entry point used when the caller has already materialised and
+/// filtered the address list (for example after applying `--exclude`), rather
+/// than enumerating a whole subnet or range. Each probe is retried up to
+/// `retries` extra times on silence (see [`scan_address_with_retries`]).
+pub fn scan_hosts(addrs: Vec<IpAddr>, timeout: Option<Duration>, retries: u32) -> Vec<HostHit> {
+    let total = addrs.len() as u64;
+    scan_all(
+        addrs.into_par_iter(),
+        total,
+        timeout,
+        retries,
+        "Scan completed",
+    )
+}
+
 /// Scan every address yielded by `addrs` in parallel and return the ones that
 /// are available, sorted ascending.
 ///

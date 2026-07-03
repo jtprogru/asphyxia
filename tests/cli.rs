@@ -267,6 +267,91 @@ fn port_scan_grep_with_no_open_ports_emits_nothing() {
 }
 
 #[test]
+fn exclude_ports_removing_the_only_port_prints_guidance() {
+    // The only requested port is also excluded, so nothing is left to scan.
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "--exclude-ports", "1"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("No ports left to scan"));
+}
+
+#[test]
+fn exclude_ports_rejects_invalid_list() {
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1,2",
+            "--exclude-ports",
+            "nope",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Invalid port number: nope"));
+}
+
+#[test]
+fn address_scan_exclude_rejects_invalid_spec() {
+    asphyxia()
+        .args(["as", "-s", "10.0.0.0/30", "--exclude", "not-an-ip"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Invalid exclude address"));
+}
+
+#[test]
+fn address_scan_exclude_filters_hosts_from_a_pn_scan() {
+    // -Pn marks every address up without probing; --exclude removes one of them,
+    // so the excluded address must not appear in the output.
+    asphyxia()
+        .args([
+            "as",
+            "-r",
+            "10.20.30.1",
+            "10.20.30.4",
+            "--Pn",
+            "--exclude",
+            "10.20.30.2",
+            "-o",
+            "grep",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("10.20.30.1"))
+        .stdout(predicate::str::contains("10.20.30.4"))
+        .stdout(predicate::str::contains("10.20.30.2").not());
+}
+
+#[test]
+fn address_scan_exclude_file_is_read() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("asphyxia-exclude-{}.txt", std::process::id()));
+    std::fs::write(&path, "# comment\n10.20.31.3\n\n").unwrap();
+
+    asphyxia()
+        .args([
+            "as",
+            "-r",
+            "10.20.31.1",
+            "10.20.31.4",
+            "--Pn",
+            "--exclude-file",
+            path.to_str().unwrap(),
+            "-o",
+            "grep",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("10.20.31.3").not())
+        .stdout(predicate::str::contains("10.20.31.1"));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn output_file_writes_machine_output_and_keeps_stdout_clean() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!("asphyxia-cli-out-{}.csv", std::process::id()));

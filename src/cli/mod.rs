@@ -45,6 +45,10 @@ Examples:
   # Skip host discovery and treat every address as up (like nmap -Pn)
   asphyxia as -s 192.168.1.0/24 --Pn
 
+  # Exclude hosts/CIDRs, ports, or known CDN/WAF ranges
+  asphyxia as -s 192.168.1.0/24 --exclude 192.168.1.0/28
+  asphyxia ps -t example.com --top-ports 1000 --exclude-ports 9100 --exclude-cdn
+
   # Use a custom connection timeout (milliseconds)
   asphyxia ps -t example.com -s 22,80,443 --timeout 500
 
@@ -119,6 +123,14 @@ pub enum Args {
         #[arg(long = "ports", value_name = "NAME", group = "ports")]
         port_set: Option<String>,
 
+        /// Remove these comma-separated ports from the scan set
+        #[arg(long = "exclude-ports", value_name = "PORTS")]
+        exclude_ports: Option<String>,
+
+        /// For known CDN/WAF targets, scan only 80 and 443 instead of the full set
+        #[arg(long = "exclude-cdn")]
+        exclude_cdn: bool,
+
         /// Connection timeout in milliseconds
         #[arg(long, value_name = "MS", default_value_t = 2000)]
         timeout: u64,
@@ -157,6 +169,14 @@ pub enum Args {
         /// Skip host discovery and treat every target as up (like nmap -Pn)
         #[arg(long = "Pn", visible_alias = "skip-discovery")]
         no_discovery: bool,
+
+        /// Exclude these hosts/CIDRs from the scan (repeatable, comma-separated)
+        #[arg(long = "exclude", value_name = "SPEC")]
+        exclude: Vec<String>,
+
+        /// Exclude hosts/CIDRs listed in a file (one per line)
+        #[arg(long = "exclude-file", value_name = "PATH")]
+        exclude_file: Option<PathBuf>,
 
         /// Connection timeout in milliseconds
         #[arg(long, value_name = "MS", default_value_t = 2000)]
