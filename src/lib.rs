@@ -99,4 +99,6 @@ pub use output::{OutputFormat, ScanRecord};
 pub use scanner::address::{HostHit, scan_address, scan_ip_range, scan_subnet};
 /// Re-export commonly used types and functions
 pub use scanner::port::{PortHit, is_resolvable, resolve_host, scan_port};
-pub use utils::{init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar};
+pub use utils::{
+    init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets_from_stdin,
+};

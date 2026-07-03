@@ -4,15 +4,12 @@ use clap::Parser;
 use owo_colors::OwoColorize;
 use rayon::prelude::*;
 
-mod cli;
-mod output;
-mod scanner;
-mod utils;
-
-use cli::Args;
-use output::{OutputFormat, ScanRecord, print_json, print_jsonl};
-use scanner::{address, port};
-use utils::{init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar};
+use asphyxia::cli::Args;
+use asphyxia::output::{OutputFormat, ScanRecord, print_json, print_jsonl};
+use asphyxia::scanner::{address, port};
+use asphyxia::utils::{
+    init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets_from_stdin,
+};
 
 fn main() {
     let args = Args::parse();
@@ -25,20 +22,18 @@ fn main() {
     match args {
         Args::PortScan {
             host,
+            stdin,
             range,
             specific,
+            all_ports,
             timeout,
             ..
         } => {
             let timeout = Some(Duration::from_millis(timeout));
 
-            // Make sure the host resolves before we try to scan it.
-            if !port::is_resolvable(&host) {
-                eprintln!("{}", format!("Could not resolve host: {}", host).red());
-                return;
-            }
-
-            let ports: Vec<u16> = if let Some(range) = range {
+            let ports: Vec<u16> = if all_ports {
+                (1..=u16::MAX).collect()
+            } else if let Some(range) = range {
                 // clap enforces exactly two values via `num_args = 2`.
                 let start = range[0];
                 let end = range[1];
@@ -56,54 +51,98 @@ fn main() {
                     }
                 }
             } else {
-                eprintln!("{}", "Please specify either -r or -s".yellow());
+                eprintln!(
+                    "{}",
+                    "Please specify either -r, -s, or --all-ports".yellow()
+                );
                 return;
             };
 
-            // Resolve the host to an IP once, so the parallel scan below does
-            // not issue a DNS lookup for every single port.
-            let scan_host = match port::resolve_host(&host) {
-                Some(ip) => ip.to_string(),
-                None => {
-                    eprintln!("{}", format!("Could not resolve host: {}", host).red());
+            // Gather the raw targets: either the single `-t` host, or a batch
+            // read from stdin (clap guarantees exactly one of the two is set).
+            let targets: Vec<String> = if stdin {
+                let targets = read_targets_from_stdin();
+                if targets.is_empty() {
+                    eprintln!("{}", "No targets read from stdin".yellow());
                     return;
                 }
+                targets
+            } else {
+                // clap's required `target` group guarantees `host` is present.
+                vec![host.expect("clap enforces --host when --stdin is absent")]
             };
 
-            let total_ports = ports.len();
+            // Resolve each target to an IP once, so the parallel scan below does
+            // not issue a DNS lookup for every single port. Unresolvable targets
+            // are reported and skipped rather than aborting the whole batch.
+            let resolved: Vec<(String, String)> = targets
+                .iter()
+                .filter_map(|host| match port::resolve_host(host) {
+                    Some(ip) => Some((host.clone(), ip.to_string())),
+                    None => {
+                        eprintln!("{}", format!("Could not resolve host: {}", host).red());
+                        None
+                    }
+                })
+                .collect();
 
-            if format == OutputFormat::Text {
-                println!(
-                    "\n##### {} scanning ports on host: {} #####\n",
-                    "Started".bright_blue(),
-                    host.bright_green()
-                );
+            if resolved.is_empty() {
+                return;
             }
 
-            let pb = progress_bar(total_ports as u64, "ports scanned");
+            if format == OutputFormat::Text {
+                if let [(host, _)] = resolved.as_slice() {
+                    println!(
+                        "\n##### {} scanning ports on host: {} #####\n",
+                        "Started".bright_blue(),
+                        host.bright_green()
+                    );
+                } else {
+                    println!(
+                        "\n##### {} scanning ports on {} hosts #####\n",
+                        "Started".bright_blue(),
+                        resolved.len().to_string().bright_green()
+                    );
+                }
+            }
 
-            let mut opened: Vec<port::PortHit> = ports
+            // Fan every (host, port) pair out across the shared pool so that
+            // multiple hosts are probed concurrently, not one after another.
+            let jobs: Vec<(usize, u16)> = resolved
+                .iter()
+                .enumerate()
+                .flat_map(|(i, _)| ports.iter().map(move |&port| (i, port)))
+                .collect();
+
+            let pb = progress_bar(jobs.len() as u64, "ports scanned");
+
+            let mut opened: Vec<(usize, port::PortHit)> = jobs
                 .into_par_iter()
-                .filter_map(|port| {
-                    let open_port = port::scan_port(scan_host.clone(), port, timeout);
+                .filter_map(|(i, port)| {
+                    let hit = port::scan_port(resolved[i].1.clone(), port, timeout);
                     pb.inc(1);
-                    open_port
+                    hit.map(|hit| (i, hit))
                 })
                 .collect();
 
             pb.finish_with_message("Scan completed");
 
-            opened.sort_by_key(|hit| hit.port);
+            opened.sort_by_key(|(i, hit)| (*i, hit.port));
 
             match format {
                 OutputFormat::Text => {
                     if !opened.is_empty() {
-                        println!(
-                            "\n-- {} for {} --\n",
-                            "Opened ports".green(),
-                            host.bright_yellow()
-                        );
-                        for hit in &opened {
+                        let mut current: Option<usize> = None;
+                        for (i, hit) in &opened {
+                            let host = &resolved[*i].0;
+                            if current != Some(*i) {
+                                println!(
+                                    "\n-- {} for {} --\n",
+                                    "Opened ports".green(),
+                                    host.bright_yellow()
+                                );
+                                current = Some(*i);
+                            }
                             println!(
                                 "{}:{}",
                                 host.bright_cyan(),
@@ -119,8 +158,8 @@ fn main() {
                 OutputFormat::Json | OutputFormat::Jsonl => {
                     let records: Vec<ScanRecord> = opened
                         .iter()
-                        .map(|hit| ScanRecord {
-                            ip: scan_host.clone(),
+                        .map(|(i, hit)| ScanRecord {
+                            ip: resolved[*i].1.clone(),
                             port: Some(hit.port),
                             proto: "tcp",
                             latency_ms: hit.latency.as_millis(),

@@ -16,8 +16,9 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 
 ## Features
 
-- **Port scanning** — scan a range of ports or a specific comma-separated list on a target host.
+- **Port scanning** — scan a range of ports, a specific comma-separated list, or the entire port range (`--all-ports`) on a target host.
 - **Address scanning** — check a single IP, scan an IP range, or scan an entire subnet (CIDR).
+- **Chainable scans** — pipe the hosts an address scan discovers straight into a port scan with `--stdin`, turning host discovery and port scanning into a single pipeline.
 - **IPv4 and IPv6** — every scan mode accepts both address families.
 - **Configurable timeout** — tune the per-connection timeout with `--timeout`.
 - **Parallel execution** — scans run concurrently via [rayon](https://crates.io/crates/rayon), with tunable concurrency (`--concurrency`) for large subnet scans.
@@ -96,15 +97,25 @@ asphyxia ps -t example.com -r 80 443
 # Scan specific ports (comma-separated)
 asphyxia ps -t example.com -s 22,80,443,8080
 
+# Scan every port (1-65535)
+asphyxia ps -t example.com --all-ports
+
 # Scan an IPv6 host with a shorter timeout
 asphyxia ps -t 2001:db8::1 -s 22,80,443 --timeout 500
+
+# Read targets from stdin instead of -t (one host per line, or JSON/JSONL from `as`)
+asphyxia ps --stdin -s 22,80,443 < hosts.txt
 ```
+
+Exactly one target source is required — either `-t/--host` or `--stdin` — and they are mutually exclusive. Likewise `-r`, `-s`, and `--all-ports` are mutually exclusive.
 
 | Flag | Description |
 |------|-------------|
 | `-t, --host <HOST>` | Target host (hostname, IPv4, or IPv6) |
+| `--stdin` | Read targets from stdin instead of `-t`: one host per line, or the JSON/JSONL emitted by `asphyxia as -o` (the `ip` field is used) |
 | `-r, --range <START> <END>` | Scan an inclusive range of ports |
 | `-s, --specific <PORTS>` | Scan specific comma-separated ports |
+| `-a, --all-ports` | Scan the entire port range (1-65535) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 | `-o, --output <FORMAT>` | Output format: `text` (default), `json`, or `jsonl` |
@@ -155,6 +166,23 @@ Records are written to stdout; the progress bar and any errors go to stderr, so 
 
 ```bash
 asphyxia ps -t example.com -r 1 1024 -o jsonl 2>/dev/null | jq -c 'select(.port == 443)'
+```
+
+### Chaining discovery into port scanning (`--stdin`)
+
+`asphyxia ps --stdin` reads its targets from standard input, so the hosts an address scan finds can flow directly into a port scan. The input format is auto-detected line by line: a line that is a JSON object or array has its `ip` field(s) taken as targets (so the `-o json`/`-o jsonl` output of `as` works as-is), and any other non-empty line is treated as a bare host or IP (so a plain `hosts.txt` works too). Blank lines are skipped and duplicate targets are scanned once.
+
+```bash
+# Discover live hosts on a subnet, then scan common ports on each of them
+asphyxia as -s 192.168.1.0/24 -o jsonl 2>/dev/null \
+  | asphyxia ps --stdin -s 22,80,443 -o jsonl
+
+# Same, but scan every port on each discovered host
+asphyxia as -s 192.168.1.0/24 -o jsonl 2>/dev/null \
+  | asphyxia ps --stdin --all-ports -o jsonl
+
+# Feed a hand-written host list
+asphyxia ps --stdin -s 22,80,443 < hosts.txt
 ```
 
 ## Performance

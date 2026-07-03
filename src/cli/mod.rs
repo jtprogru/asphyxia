@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 
 use crate::output::OutputFormat;
 
@@ -17,6 +17,13 @@ Examples:
 
   # Scan specific ports
   asphyxia ps -t example.com -s 22,80,443,8080
+
+  # Scan every port (1-65535)
+  asphyxia ps -t example.com --all-ports
+
+  # Feed live hosts from an address scan straight into a port scan
+  asphyxia as -s 192.168.1.0/24 -o jsonl | asphyxia ps --stdin -s 22,80,443
+  asphyxia as -s 192.168.1.0/24 -o jsonl | asphyxia ps --stdin --all-ports
 
   # Scan a subnet (IPv4 or IPv6)
   asphyxia as -s 192.168.1.0/24
@@ -42,8 +49,11 @@ Examples:
 Required arguments:
   For port scanning (ps):
     -t, --host <HOST>    Target host to scan (e.g., example.com)
+    --stdin              Read targets from stdin instead of -t (one host per line, or
+                         JSON/JSONL from `asphyxia as -o`); mutually exclusive with -t
     -r, --range <START> <END>    Scan a range of ports (e.g., 80 443)
     -s, --specific <PORTS>       Scan specific ports (comma-separated, e.g., 22,80,443)
+    -a, --all-ports              Scan the entire port range (1-65535)
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
 
   For address scanning (as):
@@ -55,11 +65,21 @@ Required arguments:
 )]
 pub enum Args {
     /// Port scanning command
-    #[command(name = "ps", about = "Start port scanning")]
+    #[command(
+        name = "ps",
+        about = "Start port scanning",
+        // Exactly one target source is required: a `-t` host or `--stdin`.
+        group = ArgGroup::new("target").required(true).args(["host", "stdin"])
+    )]
     PortScan {
         /// Target host (e.g., example.com)
-        #[arg(short = 't', long)]
-        host: String,
+        #[arg(short = 't', long, group = "target")]
+        host: Option<String>,
+
+        /// Read targets from stdin instead of -t: one host per line, or the
+        /// JSON/JSONL emitted by `asphyxia as -o` (the `ip` field is used).
+        #[arg(long, group = "target")]
+        stdin: bool,
 
         /// Scan range of ports: start end
         #[arg(short = 'r', long, num_args = 2, group = "ports")]
@@ -68,6 +88,10 @@ pub enum Args {
         /// Scan specific ports separated by comma
         #[arg(short = 's', long, group = "ports")]
         specific: Option<String>,
+
+        /// Scan the entire port range (1-65535)
+        #[arg(short = 'a', long = "all-ports", group = "ports")]
+        all_ports: bool,
 
         /// Connection timeout in milliseconds
         #[arg(long, value_name = "MS", default_value_t = 2000)]

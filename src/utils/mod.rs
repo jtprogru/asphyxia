@@ -1,5 +1,7 @@
 use indicatif::{ProgressBar, ProgressStyle};
 use ipnetwork::IpNetwork;
+use std::collections::HashSet;
+use std::io::BufRead;
 use std::net::IpAddr;
 
 /// Hard upper bound on the number of concurrent connection attempts.
@@ -56,6 +58,66 @@ pub fn progress_bar(total: u64, suffix: &str) -> ProgressBar {
         .progress_chars("=> "),
     );
     pb
+}
+
+/// Read scan targets from standard input, one per line.
+///
+/// This is what turns two separate scans into a pipeline: the hosts an address
+/// scan discovers can be streamed straight into a port scan
+/// (`asphyxia as ... -o jsonl | asphyxia ps --stdin ...`).
+///
+/// The input format is auto-detected per line so both a hand-written host list
+/// and the machine output of `asphyxia as` work without a flag:
+///
+/// * a line beginning with `{` or `[` is parsed as JSON and every `ip` field it
+///   contains is taken as a target (covers `-o json` and `-o jsonl`);
+/// * any other non-empty line is treated as a bare host/IP.
+///
+/// Blank lines are skipped, JSON lines that fail to parse are ignored, and
+/// duplicate targets are removed while preserving first-seen order.
+pub fn read_targets_from_stdin() -> Vec<String> {
+    let stdin = std::io::stdin();
+    let mut raw: Vec<String> = Vec::new();
+
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { continue };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match trimmed.as_bytes().first() {
+            Some(b'{') | Some(b'[') => extract_ips(trimmed, &mut raw),
+            _ => raw.push(trimmed.to_string()),
+        }
+    }
+
+    let mut seen = HashSet::new();
+    raw.into_iter()
+        .filter(|host| seen.insert(host.clone()))
+        .collect()
+}
+
+/// Pull every `ip` string out of a JSON object or array of objects, appending
+/// each to `out`. Non-JSON or shapes without an `ip` field contribute nothing.
+fn extract_ips(json: &str, out: &mut Vec<String>) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return;
+    };
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if let Some(ip) = item.get("ip").and_then(|v| v.as_str()) {
+                    out.push(ip.to_string());
+                }
+            }
+        }
+        serde_json::Value::Object(_) => {
+            if let Some(ip) = value.get("ip").and_then(|v| v.as_str()) {
+                out.push(ip.to_string());
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Parse a comma-separated string of port numbers into a vector of u16

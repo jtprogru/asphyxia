@@ -30,13 +30,35 @@ fn version_flag_prints_version() {
 }
 
 #[test]
-fn port_scan_requires_a_host() {
-    // `-t/--host` is mandatory; clap should reject the command.
+fn port_scan_requires_a_target() {
+    // A target source is mandatory: either `-t/--host` or `--stdin`. With
+    // neither, clap rejects the command and names the missing options.
     asphyxia()
         .args(["ps", "-s", "80"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("--host"));
+        .stderr(predicate::str::contains("--host"))
+        .stderr(predicate::str::contains("--stdin"));
+}
+
+#[test]
+fn port_scan_host_and_stdin_are_mutually_exclusive() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "--stdin", "-s", "80"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn port_scan_all_ports_conflicts_with_specific() {
+    // `--all-ports` shares the `ports` group with `-r`/`-s`, so combining them
+    // is rejected at parse time.
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "--all-ports", "-s", "80"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 #[test]
@@ -45,7 +67,42 @@ fn port_scan_without_range_or_specific_prints_guidance() {
         .args(["ps", "-t", "127.0.0.1"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("Please specify either -r or -s"));
+        .stderr(predicate::str::contains(
+            "Please specify either -r, -s, or --all-ports",
+        ));
+}
+
+#[test]
+fn port_scan_stdin_reads_plain_targets() {
+    // A bare host per line is fed in; port 1 on loopback is closed, so the
+    // machine output is an empty array — proving the target was read and scanned.
+    asphyxia()
+        .args(["ps", "--stdin", "-s", "1", "-o", "json"])
+        .write_stdin("127.0.0.1\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("[]\n"));
+}
+
+#[test]
+fn port_scan_stdin_reads_jsonl_from_address_scan() {
+    // The `ip` field of an `asphyxia as -o jsonl` record is used as the target.
+    asphyxia()
+        .args(["ps", "--stdin", "-s", "1", "-o", "json"])
+        .write_stdin("{\"ip\":\"127.0.0.1\",\"proto\":\"tcp\",\"status\":\"up\"}\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("[]\n"));
+}
+
+#[test]
+fn port_scan_stdin_with_no_targets_prints_guidance() {
+    asphyxia()
+        .args(["ps", "--stdin", "-s", "1"])
+        .write_stdin("")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("No targets read from stdin"));
 }
 
 #[test]
