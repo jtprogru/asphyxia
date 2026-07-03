@@ -10,7 +10,7 @@ use asphyxia::cli::Args;
 use asphyxia::output::{OutputFormat, ScanRecord, emit};
 use asphyxia::scanner::exclude::ExcludeSet;
 use asphyxia::scanner::well_known::{named_port_set, top_ports};
-use asphyxia::scanner::{address, port};
+use asphyxia::scanner::{address, nmap, port};
 use asphyxia::utils::{
     init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets_from_stdin,
 };
@@ -43,6 +43,53 @@ fn build_exclude_set(specs: &[String], file: Option<&Path>) -> Result<ExcludeSet
         }
     }
     ExcludeSet::parse(all)
+}
+
+/// Hand each scanned host's open ports off to nmap, grouping the flat
+/// `(host_index, hit)` list by host. Nothing runs for hosts with no open ports.
+///
+/// A missing nmap binary is reported once with an install hint rather than
+/// failing per host; any other spawn error is surfaced per host.
+fn run_nmap_handoff(
+    resolved: &[(String, String)],
+    opened: &[(usize, port::PortHit)],
+    extra: &[String],
+) {
+    use std::io::ErrorKind;
+
+    // `opened` is already sorted by (host index, port), so consecutive runs of
+    // the same index group a host's ports together.
+    let mut idx = 0;
+    while idx < opened.len() {
+        let host_i = opened[idx].0;
+        let mut ports = Vec::new();
+        while idx < opened.len() && opened[idx].0 == host_i {
+            ports.push(opened[idx].1.port);
+            idx += 1;
+        }
+
+        let host = &resolved[host_i].0;
+        println!(
+            "\n##### {} nmap on {} #####\n",
+            "Handing off to".bright_blue(),
+            host.bright_green()
+        );
+        match nmap::run_nmap(host, &ports, extra) {
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                eprintln!(
+                    "{}",
+                    "nmap not found on PATH — install nmap (https://nmap.org/download) to use --nmap"
+                        .red()
+                );
+                // No point retrying the remaining hosts if nmap is absent.
+                return;
+            }
+            Err(e) => {
+                eprintln!("{}", format!("Failed to run nmap on {}: {}", host, e).red());
+            }
+        }
+    }
 }
 
 /// Filter out excluded addresses, then either mark the survivors up (for `-Pn`)
@@ -86,6 +133,8 @@ fn main() {
             port_set,
             exclude_ports,
             exclude_cdn,
+            nmap,
+            nmap_args,
             timeout,
             ..
         } => {
@@ -284,6 +333,12 @@ fn main() {
                         eprintln!("{}", format!("Failed to write output: {}", e).red());
                     }
                 }
+            }
+
+            // Optional deep-dive: hand each host's open ports to nmap.
+            if nmap {
+                let extra = nmap_args.as_deref().map(nmap::split_extra_args);
+                run_nmap_handoff(&resolved, &opened, extra.as_deref().unwrap_or(&[]));
             }
         }
         Args::AddressScan {
