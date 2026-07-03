@@ -29,6 +29,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Target sources** — scan a single host, pipe targets in with `--stdin`, or read them from a file with `-i/--target-file`; hosts, IPs, and CIDRs are all accepted, and CIDRs in a file are expanded.
 - **Configuration file** — set defaults (timeout, concurrency, retries, output format) in `~/.asphyxia.toml`; command-line flags override it.
 - **Resumable scans** — checkpoint a long port scan with `--resume <file>` and pick it up where it stopped after a Ctrl-C, crash, or dropped link.
+- **SYN/stealth scan** — half-open SYN scanning over raw sockets with `--syn` (IPv4, needs privileges), with automatic fallback to the connect scan.
 
 > Note: IPv6 subnet and range scans are capped at 65 536 addresses (e.g. a `/112`), since larger IPv6 spaces are impractical to walk exhaustively.
 
@@ -111,6 +112,9 @@ asphyxia ps -t example.com --top-ports 1000
 # Scan UDP ports instead of TCP (DNS, NTP, SNMP, …)
 asphyxia ps -t example.com -s 53,123,161 --udp
 
+# SYN/stealth scan via raw sockets (needs root/CAP_NET_RAW)
+sudo asphyxia ps -t example.com --top-ports 1000 --syn
+
 # Grab banners and identify services on open ports
 asphyxia ps -t example.com -s 22,80,443 --sV
 
@@ -146,6 +150,7 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `-s, --specific <PORTS>` | Scan specific comma-separated ports |
 | `-a, --all-ports` | Scan the entire port range (1-65535) |
 | `-u, --udp` | Scan UDP ports instead of TCP (results are `open` or `open\|filtered`) |
+| `--syn` | SYN/stealth scan via raw sockets (IPv4; needs root/`CAP_NET_RAW`, else falls back to connect) |
 | `--sV` (`--banner`) | Grab banners and identify the service on each open TCP port |
 | `--resume <PATH>` | Checkpoint progress to a file and resume from it if it already exists |
 | `--top-ports <N>` | Scan the `N` most common TCP ports (frequency-ordered, up to 1000) |
@@ -188,6 +193,21 @@ asphyxia ps -t example.com -s 22,80,443 --sV
 asphyxia ps -t example.com --top-ports 100 --sV -o jsonl
 # {"ip":"93.184.216.34","port":22,"proto":"tcp","latency_ms":7,"status":"open","service":"ssh","banner":"SSH-2.0-OpenSSH_9.6"}
 ```
+
+#### SYN / stealth scan (`--syn`)
+
+`--syn` performs a half-open SYN scan over raw sockets: it sends a lone TCP SYN and never completes the handshake — a SYN/ACK means open, a RST means closed, silence means filtered. This is faster and quieter than the default connect scan, at the cost of needing elevated privileges.
+
+```bash
+sudo asphyxia ps -t scanme.nmap.org --top-ports 1000 --syn
+```
+
+Details and limitations:
+
+- **Privileges** — forging raw packets requires root or `CAP_NET_RAW`. Without them, asphyxia prints a notice and automatically falls back to the connect scan, so the command still works unprivileged (just not stealthily).
+- **IPv4 only** — IPv6 targets always use the connect scan.
+- **Correctness fallback** — a port that a SYN probe reports as *filtered* (no reply) is re-checked with a connect probe, so an open port is never missed if a reply is lost. Definitive open/closed SYN results are used directly.
+- `--syn` and `--udp` are mutually exclusive.
 
 #### Resuming a long scan (`--resume`)
 

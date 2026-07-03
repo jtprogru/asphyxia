@@ -454,6 +454,28 @@ fn service_detection_reports_service_and_banner() {
 }
 
 #[test]
+fn syn_conflicts_with_udp() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "--syn", "--udp"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn syn_scan_runs_or_falls_back_cleanly() {
+    // Port 1 on loopback is closed. Whether the process can open a raw socket
+    // (SYN → RST → closed) or not (falls back to connect → refused → closed),
+    // the reported result is the same empty JSON array. This exercises the
+    // capability check and fallback without needing privileges in CI.
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "--syn", "-o", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("[]\n"));
+}
+
+#[test]
 fn udp_scan_reports_proto_udp_in_json() {
     // A UDP probe to a closed loopback port typically draws an ICMP
     // port-unreachable (closed → not reported) or stays silent

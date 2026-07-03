@@ -9,10 +9,12 @@
 //! * `exclude` - Address and CDN exclusions for scans
 //! * `nmap` - Handoff of discovered open ports to nmap
 //! * `service` - Banner grabbing and service/version detection
+//! * `syn` - SYN/stealth scan packet assembly and parsing
 
 pub mod address;
 pub mod exclude;
 pub mod nmap;
 pub mod port;
 pub mod service;
+pub mod syn;
 pub mod well_known;
