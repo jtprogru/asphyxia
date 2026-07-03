@@ -16,7 +16,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 
 ## Features
 
-- **Port scanning** — scan a range of ports, a specific comma-separated list, or the entire port range (`--all-ports`) on a target host.
+- **Port scanning** — scan a range of ports, a specific comma-separated list, the entire port range (`--all-ports`), the N most common ports (`--top-ports`), or a named port set (`--ports web`) on a target host.
 - **Address scanning** — check a single IP, scan an IP range, or scan an entire subnet (CIDR).
 - **Chainable scans** — pipe the hosts an address scan discovers straight into a port scan with `--stdin`, turning host discovery and port scanning into a single pipeline.
 - **IPv4 and IPv6** — every scan mode accepts both address families.
@@ -100,6 +100,13 @@ asphyxia ps -t example.com -s 22,80,443,8080
 # Scan every port (1-65535)
 asphyxia ps -t example.com --all-ports
 
+# Scan the N most common TCP ports (frequency-ordered, no manual list)
+asphyxia ps -t example.com --top-ports 100
+asphyxia ps -t example.com --top-ports 1000
+
+# Scan a named port set (web, mail, db, remote, windows)
+asphyxia ps -t example.com --ports web
+
 # Scan an IPv6 host with a shorter timeout
 asphyxia ps -t 2001:db8::1 -s 22,80,443 --timeout 500
 
@@ -107,7 +114,7 @@ asphyxia ps -t 2001:db8::1 -s 22,80,443 --timeout 500
 asphyxia ps --stdin -s 22,80,443 < hosts.txt
 ```
 
-Exactly one target source is required — either `-t/--host` or `--stdin` — and they are mutually exclusive. Likewise `-r`, `-s`, and `--all-ports` are mutually exclusive.
+Exactly one target source is required — either `-t/--host` or `--stdin` — and they are mutually exclusive. Likewise `-r`, `-s`, `--all-ports`, `--top-ports`, and `--ports` are mutually exclusive.
 
 | Flag | Description |
 |------|-------------|
@@ -116,6 +123,8 @@ Exactly one target source is required — either `-t/--host` or `--stdin` — an
 | `-r, --range <START> <END>` | Scan an inclusive range of ports |
 | `-s, --specific <PORTS>` | Scan specific comma-separated ports |
 | `-a, --all-ports` | Scan the entire port range (1-65535) |
+| `--top-ports <N>` | Scan the `N` most common TCP ports (frequency-ordered, up to 1000) |
+| `--ports <NAME>` | Scan a named port set: `web`, `mail`, `db`, `remote`, `windows` |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 | `-o, --output <FORMAT>` | Output format: `text` (default), `json`, or `jsonl` |

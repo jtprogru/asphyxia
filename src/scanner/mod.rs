@@ -5,6 +5,8 @@
 //!
 //! * `port` - Port scanning functionality
 //! * `address` - Address scanning functionality
+//! * `well_known` - Frequency-ordered top ports and named port sets
 
 pub mod address;
 pub mod port;
+pub mod well_known;

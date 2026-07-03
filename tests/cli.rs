@@ -67,9 +67,34 @@ fn port_scan_without_range_or_specific_prints_guidance() {
         .args(["ps", "-t", "127.0.0.1"])
         .assert()
         .success()
-        .stderr(predicate::str::contains(
-            "Please specify either -r, -s, or --all-ports",
-        ));
+        .stderr(predicate::str::contains("Please specify either -r, -s"));
+}
+
+#[test]
+fn port_scan_top_ports_conflicts_with_specific() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "--top-ports", "100", "-s", "80"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn port_scan_top_ports_rejects_overflow() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "--top-ports", "5000"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("at most 1000"));
+}
+
+#[test]
+fn port_scan_named_set_rejects_unknown() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "--ports", "bogus"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Unknown port set"));
 }
 
 #[test]
