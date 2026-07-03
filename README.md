@@ -147,6 +147,9 @@ asphyxia as -r 192.168.1.1 192.168.1.20
 
 # Scan a subnet with a custom timeout
 asphyxia as -s 192.168.1.0/24 --timeout 300
+
+# Skip discovery and treat every address as up (like nmap -Pn)
+asphyxia as -s 192.168.1.0/24 --Pn -o jsonl | asphyxia ps --stdin --top-ports 100
 ```
 
 | Flag | Description |
@@ -154,13 +157,14 @@ asphyxia as -s 192.168.1.0/24 --timeout 300
 | `-s, --subnet <SUBNET>` | Scan a subnet, e.g. `192.168.1.0/24` or `2001:db8::/120` |
 | `-t, --target <IP>` | Scan a single IPv4 or IPv6 address |
 | `-r, --range <START> <END>` | Scan an inclusive range of IPs (start and end must share the same family) |
+| `--Pn` (`--skip-discovery`) | Skip host discovery and treat every target as up (like nmap `-Pn`) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 | `--retries <N>` | Extra retries per probe on no answer/timeout (default: 0); refused ports are never retried |
 | `-o, --output <FORMAT>` | Output format: `text` (default), `json`, `jsonl`, `csv`, or `grep` |
 | `--output-file <PATH>` (`--oF`) | Write machine-readable output to a file instead of stdout |
 
-> Host availability is inferred from a TCP probe: a host counts as up when it either accepts the connection or actively refuses it (a closed port still proves the host answered). A host that times out or is unreachable is reported as down — so a live host behind a firewall that silently drops packets may appear offline. This is an unprivileged, best-effort check, not an ICMP ping.
+> Host availability is inferred from TCP probes across a small spread of common ports (80, 443, 22, 3389), tried in order until one answers: a host counts as up when any probed port either accepts the connection or actively refuses it (a closed port still proves the host answered). Probing more than one port finds live hosts that firewall port 80 but answer elsewhere. Only when every probed port times out or is unreachable is the host reported as down — so a host that silently drops packets on all of them may still appear offline. This is an unprivileged, best-effort check, not an ICMP ping; use `--Pn` to skip discovery entirely and treat every target as up.
 
 ### Machine-readable output (`--output`)
 

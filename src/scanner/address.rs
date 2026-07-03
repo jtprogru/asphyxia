@@ -8,19 +8,23 @@ use crate::utils::progress_bar;
 
 /// An available host together with how long the availability probe took.
 ///
-/// The latency is the wall-clock time the [`PROBE_PORT`] connection spent
-/// before succeeding or being refused/reset — a rough proxy for distance.
+/// The latency is the wall-clock time the answering [`PROBE_PORTS`] connection
+/// spent before succeeding or being refused/reset — a rough proxy for distance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostHit {
     pub ip: IpAddr,
     pub latency: Duration,
 }
 
-/// TCP port used to probe a host when checking availability.
+/// TCP ports used to probe a host when checking availability, tried in order
+/// until one answers.
 ///
-/// The port does not need to be open — see [`scan_address`] for how the
-/// connection outcome is interpreted.
-const PROBE_PORT: u16 = 80;
+/// A single probe port (say 80) misses a live host that firewalls that port but
+/// answers on another, so we probe a small spread of very common services and
+/// call the host up as soon as any of them answers. None of the ports needs to
+/// be *open* — see [`scan_address`] for how each connection outcome is
+/// interpreted.
+pub const PROBE_PORTS: [u16; 4] = [80, 443, 22, 3389];
 
 /// Upper bound on the number of addresses enumerated for a single subnet or
 /// range scan when the family is IPv6.
@@ -32,17 +36,19 @@ pub const MAX_IPV6_HOSTS: u128 = 1 << 16; // 65_536 addresses (e.g. a /112)
 
 /// Scan a single IP address for availability.
 ///
-/// Availability is inferred from how the host reacts to a TCP probe on
-/// [`PROBE_PORT`] rather than from whether that port happens to be open:
+/// Availability is inferred from how the host reacts to TCP probes across
+/// [`PROBE_PORTS`] rather than from whether any one port happens to be open. The
+/// host is up as soon as any probed port either:
 ///
-/// * the connection **succeeds** — the host is up (and the port is open); or
-/// * the connection is **refused/reset** — the host actively answered, so it
-///   is up even though the port is closed.
+/// * **succeeds** — the host is up (and that port is open); or
+/// * is **refused/reset** — the host actively answered, so it is up even though
+///   the port is closed.
 ///
-/// A timeout, "host unreachable", "network unreachable", or any other error is
-/// treated as down. This is a best-effort, unprivileged check: a live host
-/// behind a firewall that silently *drops* packets (rather than refusing them)
-/// is indistinguishable from one that is offline and will be reported as down.
+/// Only when *every* probe port is silent (timeout, "host unreachable",
+/// "network unreachable", …) is the host treated as down. This is a best-effort,
+/// unprivileged check: a live host behind a firewall that silently *drops*
+/// packets on all probed ports is indistinguishable from one that is offline and
+/// will be reported as down.
 ///
 /// # Arguments
 ///
@@ -103,12 +109,20 @@ pub fn scan_address_with_retries(
     None
 }
 
-/// Make a single availability probe. Returns `Some` when the host answers
-/// (open, or refused/reset) and `None` on silence (timeout/unreachable) — the
-/// only outcome worth retrying.
+/// Probe a host across [`PROBE_PORTS`] in order, returning `Some` as soon as any
+/// port answers (open, or refused/reset). Returns `None` only when *every* port
+/// is silent (timeout/unreachable) — the outcome worth retrying.
 fn probe_address(ip: IpAddr, timeout: Duration) -> Option<HostHit> {
+    PROBE_PORTS
+        .iter()
+        .find_map(|&port| probe_port(ip, port, timeout))
+}
+
+/// Make a single availability probe against one port. Returns `Some` when the
+/// host answers (open, or refused/reset) and `None` on silence.
+fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> Option<HostHit> {
     let start = Instant::now();
-    match TcpStream::connect_timeout(&SocketAddr::new(ip, PROBE_PORT), timeout) {
+    match TcpStream::connect_timeout(&SocketAddr::new(ip, port), timeout) {
         // Port is open: the host is unambiguously up.
         Ok(_) => Some(HostHit {
             ip,
@@ -339,6 +353,49 @@ fn ipv4(n: u32) -> IpAddr {
     IpAddr::V4(Ipv4Addr::from(n))
 }
 
+/// Enumerate every address in a subnet as a plain list, without probing.
+///
+/// This backs `-Pn` (skip host discovery): the caller marks every returned
+/// address as up. IPv4 subnets are enumerated in full; IPv6 subnets are subject
+/// to the same [`MAX_IPV6_HOSTS`] cap as a scan (a wider prefix warns and yields
+/// an empty list).
+pub fn subnet_addresses(subnet: IpNetwork) -> Vec<IpAddr> {
+    match (subnet.network(), subnet.broadcast()) {
+        (IpAddr::V4(network), IpAddr::V4(broadcast)) => {
+            let start = u32::from(network);
+            let end = u32::from(broadcast);
+            (start..=end).map(ipv4).collect()
+        }
+        (IpAddr::V6(network), IpAddr::V6(broadcast)) => {
+            ipv6_hosts(network, broadcast).unwrap_or_default()
+        }
+        // network() and broadcast() always share the subnet's family.
+        _ => Vec::new(),
+    }
+}
+
+/// Enumerate every address in an inclusive range as a plain list, without
+/// probing. Backs `-Pn` for range scans; mirrors [`subnet_addresses`].
+pub fn range_addresses(start: IpAddr, end: IpAddr) -> Vec<IpAddr> {
+    match (start, end) {
+        (IpAddr::V4(start), IpAddr::V4(end)) => {
+            let start = u32::from(start);
+            let end = u32::from(end);
+            if start > end {
+                return Vec::new();
+            }
+            (start..=end).map(ipv4).collect()
+        }
+        (IpAddr::V6(start), IpAddr::V6(end)) => {
+            if start > end {
+                return Vec::new();
+            }
+            ipv6_hosts(start, end).unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +499,43 @@ mod tests {
         } else {
             panic!("expected IPv6 network");
         }
+    }
+
+    #[test]
+    fn probe_reports_up_at_the_first_responding_port() {
+        // Bind a listener on an ephemeral port and probe it directly: the first
+        // (and only) port in the list answers, so the host is reported up.
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().unwrap().port();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let hit = probe_port(ip, port, Duration::from_millis(200));
+        assert!(hit.is_some(), "an open port should mark the host up");
+        assert_eq!(hit.unwrap().ip, ip);
+    }
+
+    #[test]
+    fn probe_ports_spans_more_than_just_port_80() {
+        // Regression guard for the multi-port discovery: a live host that only
+        // answers on a non-80 port must still be discoverable.
+        assert!(PROBE_PORTS.contains(&443));
+        assert!(PROBE_PORTS.len() > 1);
+    }
+
+    #[test]
+    fn subnet_addresses_enumerates_every_host_without_probing() {
+        let subnet = "127.0.0.0/30".parse::<IpNetwork>().unwrap();
+        let addrs = subnet_addresses(subnet);
+        // A /30 spans network..broadcast inclusive = 4 addresses.
+        assert_eq!(addrs.len(), 4);
+        assert!(addrs.contains(&"127.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn range_addresses_enumerates_inclusive_and_rejects_backwards() {
+        let start: IpAddr = "10.0.0.1".parse().unwrap();
+        let end: IpAddr = "10.0.0.5".parse().unwrap();
+        assert_eq!(range_addresses(start, end).len(), 5);
+        assert!(range_addresses(end, start).is_empty());
     }
 }

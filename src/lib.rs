@@ -97,8 +97,8 @@ pub mod utils;
 
 pub use output::{OutputFormat, ScanRecord, emit, render};
 pub use scanner::address::{
-    HostHit, scan_address, scan_address_with_retries, scan_ip_range, scan_ip_range_with_retries,
-    scan_subnet, scan_subnet_with_retries,
+    HostHit, range_addresses, scan_address, scan_address_with_retries, scan_ip_range,
+    scan_ip_range_with_retries, scan_subnet, scan_subnet_with_retries, subnet_addresses,
 };
 /// Re-export commonly used types and functions
 pub use scanner::port::{PortHit, is_resolvable, resolve_host, scan_port, scan_port_with_retries};
