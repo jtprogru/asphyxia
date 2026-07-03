@@ -24,7 +24,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Parallel execution** — scans run concurrently via [rayon](https://crates.io/crates/rayon), with tunable concurrency (`--concurrency`) for large subnet scans.
 - **Live progress bars** — long-running scans show real-time progress.
 - **Colorized output** — readable, colored terminal output.
-- **Machine-readable output** — emit results as JSON or JSON Lines with `--output` for piping into other tools.
+- **Machine-readable output** — emit results as JSON, JSON Lines, CSV, or greppable text with `--output`, and write them straight to a file with `--output-file`, for piping into other tools.
 
 > Note: IPv6 subnet and range scans are capped at 65 536 addresses (e.g. a `/112`), since larger IPv6 spaces are impractical to walk exhaustively.
 
@@ -127,7 +127,8 @@ Exactly one target source is required — either `-t/--host` or `--stdin` — an
 | `--ports <NAME>` | Scan a named port set: `web`, `mail`, `db`, `remote`, `windows` |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
-| `-o, --output <FORMAT>` | Output format: `text` (default), `json`, or `jsonl` |
+| `-o, --output <FORMAT>` | Output format: `text` (default), `json`, `jsonl`, `csv`, or `grep` |
+| `--output-file <PATH>` (`--oF`) | Write machine-readable output to a file instead of stdout |
 
 ### Address scanning (`as`)
 
@@ -154,13 +155,14 @@ asphyxia as -s 192.168.1.0/24 --timeout 300
 | `-r, --range <START> <END>` | Scan an inclusive range of IPs (start and end must share the same family) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
-| `-o, --output <FORMAT>` | Output format: `text` (default), `json`, or `jsonl` |
+| `-o, --output <FORMAT>` | Output format: `text` (default), `json`, `jsonl`, `csv`, or `grep` |
+| `--output-file <PATH>` (`--oF`) | Write machine-readable output to a file instead of stdout |
 
 > Host availability is inferred from a TCP probe: a host counts as up when it either accepts the connection or actively refuses it (a closed port still proves the host answered). A host that times out or is unreachable is reported as down — so a live host behind a firewall that silently drops packets may appear offline. This is an unprivileged, best-effort check, not an ICMP ping.
 
 ### Machine-readable output (`--output`)
 
-By default Asphyxia prints a colorized, human-friendly report. Pass `--output json` or `--output jsonl` (alias `-o`) to emit structured results instead — for example to feed a network map, a coverage analyzer, or any downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted for address scans), `proto`, `latency_ms`, and `status`.
+By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto`, `latency_ms`, and `status`.
 
 ```bash
 # One JSON object per open port, on its own line (JSON Lines)
@@ -169,12 +171,24 @@ asphyxia ps -t example.com -s 22,80,443 -o jsonl
 
 # A single JSON array of available hosts
 asphyxia as -s 192.168.1.0/24 -o json
+
+# CSV with a header row (ip,port,proto,status,latency_ms)
+asphyxia ps -t example.com --top-ports 100 -o csv
+
+# Greppable, tab-separated columns for grep/awk/cut
+asphyxia ps -t example.com -s 22,80,443 -o grep
 ```
 
-Records are written to stdout; the progress bar and any errors go to stderr, so a consumer reading stdout sees only the data stream. An empty result is `[]` for `json` and no output for `jsonl`. Pipe straight into `jq`:
+Records are written to stdout; the progress bar and any errors go to stderr, so a consumer reading stdout sees only the data stream. An empty result is `[]` for `json`, a lone header for `csv`, and no output for `jsonl`/`grep`. Pipe straight into `jq`:
 
 ```bash
 asphyxia ps -t example.com -r 1 1024 -o jsonl 2>/dev/null | jq -c 'select(.port == 443)'
+```
+
+Use `--output-file <PATH>` (alias `--oF`) to write the machine-readable output to a file instead of stdout — handy for saving a scan while still watching the progress bar on the terminal:
+
+```bash
+asphyxia ps -t example.com --top-ports 1000 -o csv --output-file scan.csv
 ```
 
 ### Chaining discovery into port scanning (`--stdin`)

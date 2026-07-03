@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{ArgGroup, Parser};
 
 use crate::output::OutputFormat;
@@ -46,9 +48,12 @@ Examples:
   # Raise concurrency to speed up a large subnet scan
   asphyxia as -s 10.0.0.0/22 --concurrency 512
 
-  # Emit machine-readable output for a pipeline (text | json | jsonl)
+  # Emit machine-readable output for a pipeline (text | json | jsonl | csv | grep)
   asphyxia ps -t example.com -s 22,80,443 -o jsonl
   asphyxia as -s 10.0.0.0/24 -o json
+
+  # Save machine-readable output to a file instead of stdout
+  asphyxia ps -t example.com --top-ports 1000 -o csv --output-file scan.csv
 
 Required arguments:
   For port scanning (ps):
@@ -118,6 +123,10 @@ pub enum Args {
         /// Output format
         #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
+
+        /// Write machine-readable output to a file instead of stdout
+        #[arg(long = "output-file", visible_alias = "oF", value_name = "PATH")]
+        output_file: Option<PathBuf>,
     },
     /// Address scanning command
     #[command(name = "as", about = "Start address scanning")]
@@ -145,6 +154,10 @@ pub enum Args {
         /// Output format
         #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
+
+        /// Write machine-readable output to a file instead of stdout
+        #[arg(long = "output-file", visible_alias = "oF", value_name = "PATH")]
+        output_file: Option<PathBuf>,
     },
 }
 
@@ -163,6 +176,16 @@ impl Args {
     pub fn output_format(&self) -> OutputFormat {
         match self {
             Args::PortScan { output, .. } | Args::AddressScan { output, .. } => *output,
+        }
+    }
+
+    /// The file to write machine-readable output to, if any, regardless of
+    /// which subcommand was invoked.
+    pub fn output_file(&self) -> Option<&PathBuf> {
+        match self {
+            Args::PortScan { output_file, .. } | Args::AddressScan { output_file, .. } => {
+                output_file.as_ref()
+            }
         }
     }
 }

@@ -5,7 +5,7 @@ use owo_colors::OwoColorize;
 use rayon::prelude::*;
 
 use asphyxia::cli::Args;
-use asphyxia::output::{OutputFormat, ScanRecord, print_json, print_jsonl};
+use asphyxia::output::{OutputFormat, ScanRecord, emit};
 use asphyxia::scanner::well_known::{named_port_set, top_ports};
 use asphyxia::scanner::{address, port};
 use asphyxia::utils::{
@@ -19,6 +19,7 @@ fn main() {
     init_scan_pool(args.concurrency());
 
     let format = args.output_format();
+    let output_file = args.output_file().cloned();
 
     match args {
         Args::PortScan {
@@ -174,7 +175,7 @@ fn main() {
 
                     println!("\n##### {} #####\n", "Game Over".bright_red());
                 }
-                OutputFormat::Json | OutputFormat::Jsonl => {
+                _ => {
                     let records: Vec<ScanRecord> = opened
                         .iter()
                         .map(|(i, hit)| ScanRecord {
@@ -185,10 +186,8 @@ fn main() {
                             status: "open",
                         })
                         .collect();
-                    if format == OutputFormat::Json {
-                        print_json(&records);
-                    } else {
-                        print_jsonl(&records);
+                    if let Err(e) = emit(&records, format, output_file.as_deref()) {
+                        eprintln!("{}", format!("Failed to write output: {}", e).red());
                     }
                 }
             }
@@ -273,7 +272,7 @@ fn main() {
 
                     println!("\n##### {} #####\n", "Game Over".bright_red());
                 }
-                OutputFormat::Json | OutputFormat::Jsonl => {
+                _ => {
                     let records: Vec<ScanRecord> = available
                         .iter()
                         .map(|hit| ScanRecord {
@@ -284,10 +283,8 @@ fn main() {
                             status: "up",
                         })
                         .collect();
-                    if format == OutputFormat::Json {
-                        print_json(&records);
-                    } else {
-                        print_jsonl(&records);
+                    if let Err(e) = emit(&records, format, output_file.as_deref()) {
+                        eprintln!("{}", format!("Failed to write output: {}", e).red());
                     }
                 }
             }
