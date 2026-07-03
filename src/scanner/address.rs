@@ -66,7 +66,47 @@ pub const MAX_IPV6_HOSTS: u128 = 1 << 16; // 65_536 addresses (e.g. a /112)
 /// }
 /// ```
 pub fn scan_address(ip: IpAddr, timeout: Option<Duration>) -> Option<HostHit> {
+    scan_address_with_retries(ip, timeout, 0)
+}
+
+/// Scan a single IP for availability, retrying up to `retries` extra times when
+/// a probe gets no answer (timeout/unreachable).
+///
+/// On a lossy network a dropped probe makes a live host look down; a small
+/// `retries` value trades a little time for fewer false negatives. A host that
+/// answers (open, or refused/reset) is decided on the first probe and never
+/// retried. `retries == 0` is a single attempt, identical to [`scan_address`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use asphyxia::scanner::address::scan_address_with_retries;
+/// use std::net::IpAddr;
+/// use std::time::Duration;
+///
+/// let ip: IpAddr = "192.168.1.1".parse().unwrap();
+/// if let Some(hit) = scan_address_with_retries(ip, Some(Duration::from_millis(500)), 2) {
+///     println!("Host {} is up ({} ms)", hit.ip, hit.latency.as_millis());
+/// }
+/// ```
+pub fn scan_address_with_retries(
+    ip: IpAddr,
+    timeout: Option<Duration>,
+    retries: u32,
+) -> Option<HostHit> {
     let timeout = timeout.unwrap_or(crate::scanner::port::CONNECT_TIMEOUT);
+    for _ in 0..=retries {
+        if let Some(hit) = probe_address(ip, timeout) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+/// Make a single availability probe. Returns `Some` when the host answers
+/// (open, or refused/reset) and `None` on silence (timeout/unreachable) — the
+/// only outcome worth retrying.
+fn probe_address(ip: IpAddr, timeout: Duration) -> Option<HostHit> {
     let start = Instant::now();
     match TcpStream::connect_timeout(&SocketAddr::new(ip, PROBE_PORT), timeout) {
         // Port is open: the host is unambiguously up.
@@ -86,7 +126,7 @@ pub fn scan_address(ip: IpAddr, timeout: Option<Duration>) -> Option<HostHit> {
                 latency: start.elapsed(),
             })
         }
-        // Timeout, unreachable, or anything else: treat the host as down.
+        // Timeout, unreachable, or anything else: no answer.
         Err(_) => None,
     }
 }
@@ -96,8 +136,15 @@ pub fn scan_address(ip: IpAddr, timeout: Option<Duration>) -> Option<HostHit> {
 ///
 /// This is the shared engine behind subnet and range scans: it owns the
 /// progress bar and the parallel fan-out so callers only have to describe
-/// which addresses to probe.
-fn scan_all<I>(addrs: I, total: u64, timeout: Option<Duration>, finish_msg: &str) -> Vec<HostHit>
+/// which addresses to probe. Each probe is retried up to `retries` extra times
+/// on silence (see [`scan_address_with_retries`]).
+fn scan_all<I>(
+    addrs: I,
+    total: u64,
+    timeout: Option<Duration>,
+    retries: u32,
+    finish_msg: &str,
+) -> Vec<HostHit>
 where
     I: ParallelIterator<Item = IpAddr>,
 {
@@ -105,7 +152,7 @@ where
 
     let mut result: Vec<HostHit> = addrs
         .filter_map(|ip| {
-            let available = scan_address(ip, timeout);
+            let available = scan_address_with_retries(ip, timeout, retries);
             pb.inc(1);
             available
         })
@@ -142,6 +189,18 @@ where
 /// println!("Found {} available hosts", available_hosts.len());
 /// ```
 pub fn scan_subnet(subnet: IpNetwork, timeout: Option<Duration>) -> Vec<HostHit> {
+    scan_subnet_with_retries(subnet, timeout, 0)
+}
+
+/// Scan an entire subnet for available hosts, retrying each host up to
+/// `retries` extra times on silence (see [`scan_address_with_retries`]).
+///
+/// `retries == 0` is identical to [`scan_subnet`].
+pub fn scan_subnet_with_retries(
+    subnet: IpNetwork,
+    timeout: Option<Duration>,
+    retries: u32,
+) -> Vec<HostHit> {
     match (subnet.network(), subnet.broadcast()) {
         (IpAddr::V4(network), IpAddr::V4(broadcast)) => {
             let start = u32::from(network);
@@ -151,6 +210,7 @@ pub fn scan_subnet(subnet: IpNetwork, timeout: Option<Duration>) -> Vec<HostHit>
                 (start..=end).into_par_iter().map(ipv4),
                 total,
                 timeout,
+                retries,
                 "Subnet scan completed",
             )
         }
@@ -161,6 +221,7 @@ pub fn scan_subnet(subnet: IpNetwork, timeout: Option<Duration>) -> Vec<HostHit>
                     hosts.into_par_iter(),
                     total,
                     timeout,
+                    retries,
                     "Subnet scan completed",
                 )
             }
@@ -199,6 +260,19 @@ pub fn scan_subnet(subnet: IpNetwork, timeout: Option<Duration>) -> Vec<HostHit>
 /// println!("Found {} available hosts", available_hosts.len());
 /// ```
 pub fn scan_ip_range(start: IpAddr, end: IpAddr, timeout: Option<Duration>) -> Vec<HostHit> {
+    scan_ip_range_with_retries(start, end, timeout, 0)
+}
+
+/// Scan a range of IP addresses for available hosts, retrying each host up to
+/// `retries` extra times on silence (see [`scan_address_with_retries`]).
+///
+/// `retries == 0` is identical to [`scan_ip_range`].
+pub fn scan_ip_range_with_retries(
+    start: IpAddr,
+    end: IpAddr,
+    timeout: Option<Duration>,
+    retries: u32,
+) -> Vec<HostHit> {
     match (start, end) {
         (IpAddr::V4(start), IpAddr::V4(end)) => {
             let start = u32::from(start);
@@ -211,6 +285,7 @@ pub fn scan_ip_range(start: IpAddr, end: IpAddr, timeout: Option<Duration>) -> V
                 (start..=end).into_par_iter().map(ipv4),
                 total,
                 timeout,
+                retries,
                 "Range scan completed",
             )
         }
@@ -225,6 +300,7 @@ pub fn scan_ip_range(start: IpAddr, end: IpAddr, timeout: Option<Duration>) -> V
                         hosts.into_par_iter(),
                         total,
                         timeout,
+                        retries,
                         "Range scan completed",
                     )
                 }

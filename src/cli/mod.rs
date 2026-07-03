@@ -48,6 +48,9 @@ Examples:
   # Raise concurrency to speed up a large subnet scan
   asphyxia as -s 10.0.0.0/22 --concurrency 512
 
+  # Retry probes on a lossy network to cut false negatives (refused ports are not retried)
+  asphyxia ps -t example.com --top-ports 1000 --retries 2
+
   # Emit machine-readable output for a pipeline (text | json | jsonl | csv | grep)
   asphyxia ps -t example.com -s 22,80,443 -o jsonl
   asphyxia as -s 10.0.0.0/24 -o json
@@ -120,6 +123,10 @@ pub enum Args {
         #[arg(short = 'c', long, value_name = "N", default_value_t = 256)]
         concurrency: usize,
 
+        /// Extra retries per probe on no answer (timeout); refused ports are final
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        retries: u32,
+
         /// Output format
         #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
@@ -150,6 +157,10 @@ pub enum Args {
         /// Maximum number of concurrent connection attempts
         #[arg(short = 'c', long, value_name = "N", default_value_t = 256)]
         concurrency: usize,
+
+        /// Extra retries per probe on no answer (timeout); refused ports are final
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        retries: u32,
 
         /// Output format
         #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
@@ -186,6 +197,14 @@ impl Args {
             Args::PortScan { output_file, .. } | Args::AddressScan { output_file, .. } => {
                 output_file.as_ref()
             }
+        }
+    }
+
+    /// The number of extra retries per probe, regardless of which subcommand
+    /// was invoked.
+    pub fn retries(&self) -> u32 {
+        match self {
+            Args::PortScan { retries, .. } | Args::AddressScan { retries, .. } => *retries,
         }
     }
 }
