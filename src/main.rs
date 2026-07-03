@@ -6,6 +6,7 @@ use rayon::prelude::*;
 
 use asphyxia::cli::Args;
 use asphyxia::output::{OutputFormat, ScanRecord, print_json, print_jsonl};
+use asphyxia::scanner::well_known::{named_port_set, top_ports};
 use asphyxia::scanner::{address, port};
 use asphyxia::utils::{
     init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets_from_stdin,
@@ -26,6 +27,8 @@ fn main() {
             range,
             specific,
             all_ports,
+            top_ports: top_n,
+            port_set,
             timeout,
             ..
         } => {
@@ -50,10 +53,26 @@ fn main() {
                         return;
                     }
                 }
+            } else if let Some(n) = top_n {
+                match top_ports(n) {
+                    Ok(ports) => ports,
+                    Err(e) => {
+                        eprintln!("{}", e.red());
+                        return;
+                    }
+                }
+            } else if let Some(name) = port_set {
+                match named_port_set(&name) {
+                    Ok(ports) => ports,
+                    Err(e) => {
+                        eprintln!("{}", e.red());
+                        return;
+                    }
+                }
             } else {
                 eprintln!(
                     "{}",
-                    "Please specify either -r, -s, or --all-ports".yellow()
+                    "Please specify either -r, -s, --all-ports, --top-ports, or --ports".yellow()
                 );
                 return;
             };

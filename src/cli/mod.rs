@@ -21,6 +21,10 @@ Examples:
   # Scan every port (1-65535)
   asphyxia ps -t example.com --all-ports
 
+  # Scan the N most common TCP ports, or a named port set
+  asphyxia ps -t example.com --top-ports 100
+  asphyxia ps -t example.com --ports web
+
   # Feed live hosts from an address scan straight into a port scan
   asphyxia as -s 192.168.1.0/24 -o jsonl | asphyxia ps --stdin -s 22,80,443
   asphyxia as -s 192.168.1.0/24 -o jsonl | asphyxia ps --stdin --all-ports
@@ -54,6 +58,8 @@ Required arguments:
     -r, --range <START> <END>    Scan a range of ports (e.g., 80 443)
     -s, --specific <PORTS>       Scan specific ports (comma-separated, e.g., 22,80,443)
     -a, --all-ports              Scan the entire port range (1-65535)
+    --top-ports <N>              Scan the N most common TCP ports (up to 1000)
+    --ports <NAME>               Scan a named port set (web, mail, db, remote, windows)
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
 
   For address scanning (as):
@@ -92,6 +98,14 @@ pub enum Args {
         /// Scan the entire port range (1-65535)
         #[arg(short = 'a', long = "all-ports", group = "ports")]
         all_ports: bool,
+
+        /// Scan the N most common TCP ports (e.g. 100 or 1000)
+        #[arg(long = "top-ports", value_name = "N", group = "ports")]
+        top_ports: Option<usize>,
+
+        /// Scan a named port set (web, mail, db, remote, windows)
+        #[arg(long = "ports", value_name = "NAME", group = "ports")]
+        port_set: Option<String>,
 
         /// Connection timeout in milliseconds
         #[arg(long, value_name = "MS", default_value_t = 2000)]
