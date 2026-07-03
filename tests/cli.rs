@@ -296,11 +296,44 @@ fn output_file_writes_machine_output_and_keeps_stdout_clean() {
 
 #[test]
 fn address_scan_json_with_no_hosts_emits_empty_array() {
+    // A short timeout keeps this fast: discovery now probes several ports, each
+    // of which would otherwise block for the full default timeout.
     asphyxia()
-        .args(["as", "-t", "192.168.255.255", "-o", "json"])
+        .args([
+            "as",
+            "-t",
+            "192.168.255.255",
+            "--timeout",
+            "200",
+            "-o",
+            "json",
+        ])
         .assert()
         .success()
         .stdout(predicate::eq("[]\n"));
+}
+
+#[test]
+fn address_scan_pn_marks_target_up_without_probing() {
+    // -Pn skips discovery, so even an address that would never answer is
+    // reported up. No probe is sent, so this is instant regardless of timeout.
+    asphyxia()
+        .args(["as", "-t", "192.168.255.255", "--Pn", "-o", "jsonl"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"ip\":\"192.168.255.255\""))
+        .stdout(predicate::str::contains("\"status\":\"up\""));
+}
+
+#[test]
+fn address_scan_pn_marks_whole_range_up() {
+    asphyxia()
+        .args(["as", "-r", "10.10.10.1", "10.10.10.4", "--Pn", "-o", "json"])
+        .assert()
+        .success()
+        // All four addresses in the range are reported up without any probe.
+        .stdout(predicate::str::contains("10.10.10.1"))
+        .stdout(predicate::str::contains("10.10.10.4"));
 }
 
 #[test]

@@ -42,6 +42,9 @@ Examples:
   # Scan a range of IP addresses
   asphyxia as -r 192.168.1.1 192.168.1.20
 
+  # Skip host discovery and treat every address as up (like nmap -Pn)
+  asphyxia as -s 192.168.1.0/24 --Pn
+
   # Use a custom connection timeout (milliseconds)
   asphyxia ps -t example.com -s 22,80,443 --timeout 500
 
@@ -74,6 +77,7 @@ Required arguments:
     -s, --subnet <SUBNET>        Scan a subnet (e.g., 192.168.1.0/24 or 2001:db8::/120)
     -t, --target <IP>            Scan a specific IP address (IPv4 or IPv6)
     -r, --range <START> <END>    Scan a range of IP addresses
+    --Pn                         Skip host discovery; treat every target as up
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
 "#
 )]
@@ -149,6 +153,10 @@ pub enum Args {
         /// Scan a range of IP addresses
         #[arg(short = 'r', long, num_args = 2, group = "scan_type")]
         range: Option<Vec<String>>,
+
+        /// Skip host discovery and treat every target as up (like nmap -Pn)
+        #[arg(long = "Pn", visible_alias = "skip-discovery")]
+        no_discovery: bool,
 
         /// Connection timeout in milliseconds
         #[arg(long, value_name = "MS", default_value_t = 2000)]

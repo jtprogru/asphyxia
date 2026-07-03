@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::time::Duration;
 
 use clap::Parser;
@@ -11,6 +12,18 @@ use asphyxia::scanner::{address, port};
 use asphyxia::utils::{
     init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets_from_stdin,
 };
+
+/// Mark every address as up without probing, for `-Pn` (skip discovery). The
+/// latency is zero since no probe was sent.
+fn all_up(addrs: Vec<IpAddr>) -> Vec<address::HostHit> {
+    addrs
+        .into_iter()
+        .map(|ip| address::HostHit {
+            ip,
+            latency: Duration::ZERO,
+        })
+        .collect()
+}
 
 fn main() {
     let args = Args::parse();
@@ -198,6 +211,7 @@ fn main() {
             subnet,
             target,
             range,
+            no_discovery,
             timeout,
             ..
         } => {
@@ -213,7 +227,11 @@ fn main() {
                                 subnet_str.as_str().bright_green()
                             );
                         }
-                        address::scan_subnet_with_retries(network, timeout, retries)
+                        if no_discovery {
+                            all_up(address::subnet_addresses(network))
+                        } else {
+                            address::scan_subnet_with_retries(network, timeout, retries)
+                        }
                     }
                     Err(e) => {
                         eprintln!("{}", e.red());
@@ -230,9 +248,13 @@ fn main() {
                                 target_str.as_str().bright_green()
                             );
                         }
-                        address::scan_address_with_retries(ip, timeout, retries)
-                            .into_iter()
-                            .collect()
+                        if no_discovery {
+                            all_up(vec![ip])
+                        } else {
+                            address::scan_address_with_retries(ip, timeout, retries)
+                                .into_iter()
+                                .collect()
+                        }
                     }
                     Err(e) => {
                         eprintln!("{}", e.red());
@@ -251,7 +273,11 @@ fn main() {
                                 range_vec[1].as_str().bright_green()
                             );
                         }
-                        address::scan_ip_range_with_retries(start, end, timeout, retries)
+                        if no_discovery {
+                            all_up(address::range_addresses(start, end))
+                        } else {
+                            address::scan_ip_range_with_retries(start, end, timeout, retries)
+                        }
                     }
                     (Err(e), _) | (_, Err(e)) => {
                         eprintln!("{}", e.red());
