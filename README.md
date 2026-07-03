@@ -147,6 +147,8 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 | `--retries <N>` | Extra retries per probe on no answer/timeout (default: 0); refused ports are never retried |
+| `--rate <PPS>` | Cap connection attempts per second across the whole scan (0 or unset: no cap) |
+| `-T, --timing <0-5>` | Timing profile from `0` (paranoid) to `5` (insane), presetting timeout/concurrency/retries/rate |
 | `-o, --output <FORMAT>` | Output format: `text` (default), `json`, `jsonl`, `csv`, or `grep` |
 | `--output-file <PATH>` (`--oF`) | Write machine-readable output to a file instead of stdout |
 
@@ -186,6 +188,8 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 | `--retries <N>` | Extra retries per probe on no answer/timeout (default: 0); refused ports are never retried |
+| `--rate <PPS>` | Cap connection attempts per second across the whole scan (0 or unset: no cap) |
+| `-T, --timing <0-5>` | Timing profile from `0` (paranoid) to `5` (insane), presetting timeout/concurrency/retries/rate |
 | `-o, --output <FORMAT>` | Output format: `text` (default), `json`, `jsonl`, `csv`, or `grep` |
 | `--output-file <PATH>` (`--oF`) | Write machine-readable output to a file instead of stdout |
 
@@ -264,6 +268,7 @@ For repeated runs you can set defaults in `~/.asphyxia.toml` instead of retyping
 timeout     = 500     # per-connection timeout in ms
 concurrency = 512     # max concurrent connection attempts
 retries     = 1       # extra retries per probe on no answer
+rate        = 2000    # cap probes per second (0 or omitted = no cap)
 output      = "jsonl" # default output format: text | json | jsonl | csv | grep
 ```
 
@@ -278,6 +283,8 @@ To tune a scan:
 - **`--concurrency`** — raise it to finish large subnets faster (e.g. `--concurrency 512` for a `/22`); lower it if you want a gentler scan. Capped at 1024.
 - **`--timeout`** — on a responsive LAN a shorter timeout (e.g. `--timeout 500`) makes unreachable hosts give up much sooner.
 - **`--retries`** — on a lossy network (Wi-Fi, VPN, distant hosts) a dropped SYN makes an open port or live host look closed/down. A small value like `--retries 1` or `--retries 2` re-probes only when a probe got *no answer* (timeout/unreachable); a port that actively refuses the connection has already answered, so it is never retried and closed-port scans stay fast.
+- **`--rate`** — cap the number of connection attempts per second across the whole scan (e.g. `--rate 1000`). This bounds how hard the scan hits the network regardless of `--concurrency`: a single global pacer admits one probe per `1/rate` seconds, so highly-concurrent scans still stay under the limit. Leave it unset for no cap.
+- **`-T0`..`-T5`** — timing profiles that preset `--timeout`, `--concurrency`, `--retries`, and `--rate` in one shot, from `-T0` (paranoid: serial and slow) through `-T3` (the normal defaults) to `-T5` (insane: fastest, widest concurrency, no cap). Any individual flag still overrides the profile, e.g. `-T4 --timeout 800`.
 
 For example, a `/24` with the defaults completes in roughly one timeout window instead of serially walking every address.
 

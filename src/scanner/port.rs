@@ -170,6 +170,8 @@ pub fn scan_port_with_retries(
 
 /// Make a single connection attempt to `host:port` and classify the outcome.
 fn probe_port(host: &str, port: u16, timeout: Duration) -> Probe {
+    // Respect the global rate limit (no-op when none is installed).
+    crate::rate::gate();
     let Some(socket_addr) = host_port(host, port)
         .to_socket_addrs()
         .ok()

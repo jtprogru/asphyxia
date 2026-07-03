@@ -93,7 +93,9 @@
 pub mod cli;
 pub mod config;
 pub mod output;
+pub mod rate;
 pub mod scanner;
+pub mod timing;
 pub mod utils;
 
 pub use config::Config;

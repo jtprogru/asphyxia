@@ -10,9 +10,11 @@ use rayon::prelude::*;
 use asphyxia::cli::Args;
 use asphyxia::config::Config;
 use asphyxia::output::{OutputFormat, ScanRecord, emit};
+use asphyxia::rate;
 use asphyxia::scanner::exclude::ExcludeSet;
 use asphyxia::scanner::well_known::{named_port_set, top_ports};
 use asphyxia::scanner::{address, nmap, port};
+use asphyxia::timing;
 use asphyxia::utils::{
     init_scan_pool, parse_ip, parse_ports, parse_subnet, progress_bar, read_targets_from_file,
     read_targets_from_stdin,
@@ -115,13 +117,14 @@ fn scan_filtered(
     }
 }
 
-/// Apply `~/.asphyxia.toml` defaults to `args`, but only for options the user
-/// did not pass on the command line — so CLI flags always win over the config.
+/// Resolve the tunable scan options into `args`, layering three sources under a
+/// strict precedence: an explicit CLI flag beats a `-T` timing profile, which
+/// beats `~/.asphyxia.toml`, which beats the built-in defaults.
 ///
-/// The user's intent is read from clap's value source: an option whose value
-/// came from a `default_value` (not the command line) is eligible to be
-/// overridden by the config.
-fn apply_config(args: &mut Args, matches: &ArgMatches, config: &Config) {
+/// "Explicit CLI flag" is read from clap's value source, so a value that merely
+/// came from a `default_value` is still eligible to be overridden by the config
+/// or a timing profile.
+fn resolve_options(args: &mut Args, matches: &ArgMatches, config: &Config) {
     let Some((_, sub)) = matches.subcommand() else {
         return;
     };
@@ -132,6 +135,8 @@ fn apply_config(args: &mut Args, matches: &ArgMatches, config: &Config) {
             timeout,
             concurrency,
             retries,
+            rate,
+            timing,
             output,
             ..
         }
@@ -139,9 +144,12 @@ fn apply_config(args: &mut Args, matches: &ArgMatches, config: &Config) {
             timeout,
             concurrency,
             retries,
+            rate,
+            timing,
             output,
             ..
         } => {
+            // Layer 1: config fills anything not set on the command line.
             if !from_cli("timeout")
                 && let Some(v) = config.timeout
             {
@@ -157,10 +165,31 @@ fn apply_config(args: &mut Args, matches: &ArgMatches, config: &Config) {
             {
                 *retries = v;
             }
+            if !from_cli("rate") && config.rate.is_some() {
+                *rate = config.rate;
+            }
             if !from_cli("output")
                 && let Some(v) = config.output_format()
             {
                 *output = v;
+            }
+
+            // Layer 2: a -T profile overrides config/defaults, still yielding to
+            // any explicit flag.
+            if let Some(level) = *timing {
+                let profile = timing::profile(level);
+                if !from_cli("timeout") {
+                    *timeout = profile.timeout_ms;
+                }
+                if !from_cli("concurrency") {
+                    *concurrency = profile.concurrency;
+                }
+                if !from_cli("retries") {
+                    *retries = profile.retries;
+                }
+                if !from_cli("rate") {
+                    *rate = profile.rate;
+                }
             }
         }
     }
@@ -169,10 +198,15 @@ fn apply_config(args: &mut Args, matches: &ArgMatches, config: &Config) {
 fn main() {
     let matches = Args::command().get_matches();
     let mut args = Args::from_arg_matches(&matches).expect("clap builds valid Args");
-    apply_config(&mut args, &matches, &Config::load());
+    resolve_options(&mut args, &matches, &Config::load());
 
     // Size the global rayon pool for I/O-bound scanning before any scan runs.
     init_scan_pool(args.concurrency());
+
+    // Install the global rate limit (a no-op when unset or zero) before scanning.
+    if let Some(pps) = args.rate() {
+        rate::install(pps);
+    }
 
     let format = args.output_format();
     let output_file = args.output_file().cloned();
