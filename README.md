@@ -496,4 +496,4 @@ This project is licensed under the [MIT License](LICENSE).
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for how to set up your environment, the coding conventions, and the pull-request process before submitting a change.
