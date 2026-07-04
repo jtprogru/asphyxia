@@ -8,7 +8,13 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 fn asphyxia() -> Command {
-    Command::cargo_bin("asphyxia").expect("binary `asphyxia` should be built")
+    let mut cmd = Command::cargo_bin("asphyxia").expect("binary `asphyxia` should be built");
+    // Isolate every run from a real `~/.asphyxia.toml` on the developer's
+    // machine by pointing the config loader at a path that does not exist, so
+    // tests always start from the built-in defaults. Tests that exercise config
+    // behaviour set their own `ASPHYXIA_CONFIG`, which overrides this.
+    cmd.env("ASPHYXIA_CONFIG", "/nonexistent/asphyxia-test-config.toml");
+    cmd
 }
 
 #[test]
