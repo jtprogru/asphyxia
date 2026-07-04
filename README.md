@@ -345,6 +345,119 @@ output      = "jsonl" # default output format: text | json | jsonl | csv | grep
 
 With that config, `asphyxia ps -t example.com --top-ports 100` runs with a 500 ms timeout, 512-way concurrency, one retry, and JSONL output — while `asphyxia ps -t example.com --top-ports 100 -o text --timeout 2000` overrides both the format and the timeout for that run. Point `ASPHYXIA_CONFIG` at a different path to use an alternate file. An invalid config is reported on stderr and then ignored rather than aborting the scan.
 
+## Examples
+
+A cookbook of real workflows built from the features above. Each block is copy-paste ready.
+
+### Quick recon in one command
+
+```bash
+# Scan the top 1000 ports, identify services, save to a file, at a polite pace
+asphyxia ps -t scanme.nmap.org --top-ports 1000 --sV -o jsonl --output-file scan.jsonl -T3
+```
+
+### Choosing ports without a manual list
+
+```bash
+# The N most common TCP ports (frequency-ordered)
+asphyxia ps -t example.com --top-ports 100
+
+# A named port set: web | mail | db | remote | windows
+asphyxia ps -t example.com --ports web    # 80,443,8080,8443,8000,8008,8888
+asphyxia ps -t example.com --ports db     # 1433,1521,3306,5432,6379,9042,11211,27017
+
+# The top 1000, minus a couple of ports you never care about
+asphyxia ps -t example.com --top-ports 1000 --exclude-ports 9100,631
+```
+
+### Output formats and files
+
+```bash
+# CSV with a header row, written straight to a file
+asphyxia ps -t example.com --top-ports 100 -o csv --output-file ports.csv
+
+# Greppable, tab-separated columns for awk/cut
+asphyxia ps -t example.com -s 22,80,443 -o grep | awk -F'\t' '$4=="open"{print $1":"$2}'
+
+# JSON Lines into jq (progress bar and errors are on stderr)
+asphyxia ps -t example.com -r 1 1024 -o jsonl 2>/dev/null | jq -c 'select(.port == 443)'
+```
+
+### Service and version detection (`--sV`)
+
+```bash
+asphyxia ps -t example.com -s 22,80,443 --sV
+# 93.184.216.34:22 ssh [SSH-2.0-OpenSSH_9.6]
+
+asphyxia ps -t example.com --top-ports 100 --sV -o jsonl
+# {"ip":"...","port":22,"proto":"tcp","status":"open","service":"ssh","banner":"SSH-2.0-OpenSSH_9.6"}
+```
+
+### UDP scanning (DNS, NTP, SNMP)
+
+```bash
+# Statuses are open or open|filtered; the proto field in machine output is "udp"
+asphyxia ps -t 192.168.1.1 -s 53,123,161 --udp
+```
+
+### Host discovery piped into a port scan
+
+```bash
+# Find live hosts on a subnet, then scan common ports on each
+asphyxia as -s 192.168.1.0/24 -o jsonl 2>/dev/null | asphyxia ps --stdin --top-ports 100
+
+# Skip discovery entirely (like nmap -Pn) and exclude a range, then scan web ports
+asphyxia as -s 192.168.1.0/24 --Pn --exclude 192.168.1.0/28 -o jsonl 2>/dev/null \
+  | asphyxia ps --stdin --ports web
+```
+
+### Bulk runs from a file, with exclusions and a config
+
+```bash
+# targets.txt holds hosts, IPs, and CIDRs (CIDRs are expanded); spare CDN/WAF hosts
+asphyxia ps -i targets.txt --top-ports 1000 --exclude-cdn --retries 1 -o csv --output-file out.csv
+```
+
+Set defaults once in `~/.asphyxia.toml` (see [Configuration file](#configuration-file-asphyxiatoml)) so the command line stays short — any flag still overrides the config.
+
+### Controlling the tempo
+
+```bash
+# Cap the whole scan at ~1000 attempts/sec, regardless of concurrency
+asphyxia ps -t example.com --all-ports --rate 1000
+
+# Use an aggressive timing profile (0 paranoid .. 5 insane)
+asphyxia ps -t example.com --top-ports 1000 -T4
+
+# A profile, but with your own timeout overriding the preset
+asphyxia ps -t example.com --top-ports 1000 -T4 --timeout 800
+```
+
+### Resuming a long scan
+
+```bash
+# Start; on Ctrl-C (or a crash) the state is flushed. Re-run the same command to continue.
+asphyxia ps -i targets.txt --all-ports --resume scan.state
+```
+
+### SYN/stealth scan and nmap handoff
+
+```bash
+# Half-open SYN scan (needs root/CAP_NET_RAW; falls back to connect without them)
+sudo asphyxia ps -t scanme.nmap.org --top-ports 1000 --syn
+
+# Find open ports fast, then hand them to nmap for a deep dive
+asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
+```
+
+### Putting it together: a full subnet sweep
+
+```bash
+asphyxia as -s 10.0.0.0/24 --Pn -o jsonl 2>/dev/null \
+  | asphyxia ps --stdin --top-ports 1000 --sV --exclude-cdn \
+      --rate 3000 --resume subnet.state -o jsonl --output-file subnet-scan.jsonl
+```
+
 ## Performance
 
 Scanning is network-I/O-bound — most of the time is spent waiting for TCP handshakes and timeouts, not using the CPU. Asphyxia therefore runs many more concurrent probes than there are CPU cores (256 by default), so an unresponsive address (which blocks for the full `--timeout`) does not stall the rest of the scan.
