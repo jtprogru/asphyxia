@@ -8,6 +8,10 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/crates/l/asphyxia.svg)](LICENSE)
 
+<p align="center">
+  <img src="assets/cover.svg" alt="asphyxia — fast parallel network scanner in Rust: open ports, live hosts, whole subnets, over TCP, UDP and SYN" width="900">
+</p>
+
 A fast and efficient network scanner written in Rust.
 
 ## Description
@@ -29,7 +33,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Target sources** — scan a single host, pipe targets in with `--stdin`, or read them from a file with `-i/--target-file`; hosts, IPs, and CIDRs are all accepted, and CIDRs in a file are expanded.
 - **Configuration file** — set defaults (timeout, concurrency, retries, output format) in `~/.asphyxia.toml`; command-line flags override it.
 - **Resumable scans** — checkpoint a long port scan with `--resume <file>` and pick it up where it stopped after a Ctrl-C, crash, or dropped link.
-- **SYN/stealth scan** — half-open SYN scanning over raw sockets with `--syn` (IPv4, needs privileges), with automatic fallback to the connect scan.
+- **SYN/stealth scan** — half-open SYN scanning with `--syn` (IPv4, needs privileges): SYNs are sent over a raw socket and replies captured with libpcap/BPF, so it works the same on macOS and Linux, with automatic fallback to the connect scan.
 
 > Note: IPv6 subnet and range scans are capped at 65 536 addresses (e.g. a `/112`), since larger IPv6 spaces are impractical to walk exhaustively.
 
@@ -73,7 +77,7 @@ gpg --verify asphyxia-<target>.zip.asc asphyxia-<target>.zip
 
 ### Building from source
 
-Requires Rust 1.88 or newer (the project uses the 2024 edition).
+Requires Rust 1.88 or newer (the project uses the 2024 edition) and libpcap development headers for the SYN-scan reply capture. libpcap ships with macOS; on Linux install it first (`sudo apt-get install libpcap-dev` on Debian/Ubuntu, `sudo apk add libpcap-dev` on Alpine, `sudo pacman -S libpcap` on Arch).
 
 ```bash
 git clone https://github.com/jtprogru/asphyxia.git
@@ -196,7 +200,7 @@ asphyxia ps -t example.com --top-ports 100 --sV -o jsonl
 
 #### SYN / stealth scan (`--syn`)
 
-`--syn` performs a half-open SYN scan over raw sockets: it sends a lone TCP SYN and never completes the handshake — a SYN/ACK means open, a RST means closed, silence means filtered. This is faster and quieter than the default connect scan, at the cost of needing elevated privileges.
+`--syn` performs a half-open SYN scan: it sends a lone TCP SYN and never completes the handshake — a SYN/ACK means open, a RST means closed, silence means filtered. This is faster and quieter than the default connect scan, at the cost of needing elevated privileges. The SYN is forged and sent over a raw socket, and replies are read with libpcap/BPF through a single shared capture — the same approach nmap uses, and the reason it works the same on macOS and Linux.
 
 ```bash
 sudo asphyxia ps -t scanme.nmap.org --top-ports 1000 --syn
@@ -204,9 +208,12 @@ sudo asphyxia ps -t scanme.nmap.org --top-ports 1000 --syn
 
 Details and limitations:
 
-- **Privileges** — forging raw packets requires root or `CAP_NET_RAW`. Without them, asphyxia prints a notice and automatically falls back to the connect scan, so the command still works unprivileged (just not stealthily).
+- **Privileges** — forging raw packets and capturing replies requires root or `CAP_NET_RAW`. Without them, asphyxia prints a notice and automatically falls back to the connect scan, so the command still works unprivileged (just not stealthily).
+- **libpcap** — the reply capture uses libpcap. It is present by default on macOS; on Linux install `libpcap` (e.g. `libpcap-dev`/`libpcap0.8` on Debian/Ubuntu, `libpcap` on Alpine/Arch). If the capture can't be opened, asphyxia warns and falls back to the connect scan.
 - **IPv4 only** — IPv6 targets always use the connect scan.
 - **Correctness fallback** — a port that a SYN probe reports as *filtered* (no reply) is re-checked with a connect probe, so an open port is never missed if a reply is lost. Definitive open/closed SYN results are used directly.
+- **High-latency links** — a SYN probe waits up to `--timeout` for its reply. On slow paths (distant hosts, VPNs) a reply can arrive just after the deadline and the probe then falls back to a connect check (still correct, just not stealthy). Raise `--timeout` on such links so SYN replies land in time.
+- **Diagnostics** — set `ASPHYXIA_SYN_DEBUG=1` to print capture diagnostics to stderr (the chosen interface and datalink, each captured reply, and each probe's outcome), useful when a scan unexpectedly falls back.
 - `--syn` and `--udp` are mutually exclusive.
 
 #### Resuming a long scan (`--resume`)

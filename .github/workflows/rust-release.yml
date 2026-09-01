@@ -38,6 +38,10 @@ jobs:
         with:
           key: ${{ matrix.rust_target }}
 
+      - name: Install libpcap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
       - name: Build project
         run: cargo build --release --locked --target ${{ matrix.rust_target }}
 
@@ -68,6 +72,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
 
       - name: Publish to crates.io
         env:

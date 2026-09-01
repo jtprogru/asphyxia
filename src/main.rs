@@ -437,7 +437,9 @@ fn main() {
 
             // SYN scanning needs a raw socket (root / CAP_NET_RAW). When asked
             // for but unavailable, warn once and fall back to the connect scan.
-            let use_syn = if syn && !udp {
+            // The shared pcap receiver is started later, once the targets are
+            // resolved and its capture interface can be chosen.
+            let mut use_syn = if syn && !udp {
                 if syn::raw_socket_available() {
                     true
                 } else {
@@ -573,6 +575,29 @@ fn main() {
 
             if resolved.is_empty() {
                 return;
+            }
+
+            // Start the shared pcap/BPF receiver for SYN replies now that the
+            // targets are known: the capture interface is chosen from the route
+            // to the first IPv4 target. If it cannot be opened (no libpcap, an
+            // unusual link type), warn once and fall back to the connect scan.
+            if use_syn {
+                match resolved
+                    .iter()
+                    .find_map(|(_, ip)| ip.parse::<std::net::Ipv4Addr>().ok())
+                {
+                    Some(target) if syn::init_receiver(target) => {}
+                    Some(_) => {
+                        eprintln!(
+                            "{}",
+                            "SYN scan needs libpcap/BPF to read replies — falling back to connect scan"
+                                .yellow()
+                        );
+                        use_syn = false;
+                    }
+                    // No IPv4 target: SYN is IPv4-only, so use the connect scan.
+                    None => use_syn = false,
+                }
             }
 
             if format == OutputFormat::Text {
