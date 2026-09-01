@@ -1,0 +1,182 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="asphyxia — fast parallel network scanner in Rust: open ports, live hosts, whole subnets, over TCP, UDP and SYN">
+  <title>asphyxia</title>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="55%" stop-color="#12131a"/>
+      <stop offset="100%" stop-color="#1a1210"/>
+    </linearGradient>
+
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#F74C00"/>
+      <stop offset="100%" stop-color="#FFB454"/>
+    </linearGradient>
+
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity="0.028" stroke-width="1"/>
+    </pattern>
+
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#F74C00" stop-opacity="0.26"/>
+      <stop offset="100%" stop-color="#F74C00" stop-opacity="0"/>
+    </radialGradient>
+
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+
+    <style>
+      .mono { font-family: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+      .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif; }
+      .dim  { fill: #8b949e; }
+      .fg   { fill: #e6edf3; }
+      .org  { fill: #ff8a4c; }
+      .grn  { fill: #5BB359; }
+      .cyn  { fill: #58c6d8; }
+      .yel  { fill: #d8a657; }
+      .mag  { fill: #c98bdf; }
+      .red  { fill: #f0796a; }
+    </style>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <ellipse cx="1040" cy="130" rx="460" ry="320" fill="url(#glow)"/>
+  <rect x="0" y="0" width="1280" height="4" fill="url(#accent)"/>
+
+  <!-- scan heat map -->
+  <g transform="translate(824, 100)">
+    <rect x="0" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="28" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="56" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="84" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="112" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="140" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.55"/>
+    <rect x="168" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="196" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="224" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.85"/>
+    <rect x="252" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="280" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.85"/>
+    <rect x="308" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="336" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="364" y="0" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.85"/>
+    <rect x="0" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="28" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.55"/>
+    <rect x="56" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="84" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="112" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="140" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="168" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="196" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.55"/>
+    <rect x="224" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.55"/>
+    <rect x="252" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="280" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.55"/>
+    <rect x="308" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="336" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="364" y="28" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.85"/>
+    <rect x="0" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="28" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="56" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="84" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.85"/>
+    <rect x="112" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="140" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="168" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="196" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="224" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="252" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="280" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="308" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="336" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="364" y="56" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="0" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="28" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="56" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="84" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="112" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="140" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="168" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.85"/>
+    <rect x="196" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="224" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.04"/>
+    <rect x="252" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="280" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="308" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+    <rect x="336" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.1"/>
+    <rect x="364" y="84" width="20" height="20" rx="5" fill="#F74C00" fill-opacity="0.06"/>
+  </g>
+  <text class="mono dim" x="1208" y="248" font-size="13" text-anchor="end" letter-spacing="1.4" fill-opacity="0.7">65535 PORTS · /8 … /32</text>
+
+  <!-- brand block -->
+  <g transform="translate(72, 96)">
+    <rect x="0" y="0" width="292" height="28" rx="14" fill="#F74C00" fill-opacity="0.14" stroke="#F74C00" stroke-opacity="0.45"/>
+    <text class="mono org" x="16" y="19" font-size="13" letter-spacing="1.6">RUST · NETWORK SCANNER · CLI</text>
+
+    <text class="mono fg" x="0" y="112" font-size="76" font-weight="700" letter-spacing="-1.5">asphyxia</text>
+
+    <text class="sans dim" x="2" y="158" font-size="24">Fast parallel network scanner: open ports, live hosts, whole subnets.</text>
+    <text class="sans dim" x="2" y="192" font-size="24">TCP, UDP and SYN. Text for humans; JSON, JSONL, CSV and grep for pipelines.</text>
+  </g>
+
+  <!-- terminal -->
+  <g transform="translate(72, 314)" filter="url(#shadow)">
+    <rect x="0" y="0" width="1136" height="262" rx="14" fill="#0a0e14" stroke="#2a313c"/>
+    <rect x="0" y="0" width="1136" height="40" rx="14" fill="#161b22"/>
+    <rect x="0" y="26" width="1136" height="14" fill="#161b22"/>
+    <line x1="0" y1="40" x2="1136" y2="40" stroke="#2a313c"/>
+    <circle cx="24" cy="20" r="6" fill="#ff5f57"/>
+    <circle cx="46" cy="20" r="6" fill="#febc2e"/>
+    <circle cx="68" cy="20" r="6" fill="#28c840"/>
+    <text class="mono dim" x="568" y="25" font-size="13" text-anchor="middle">~/lab — zsh</text>
+
+    <text class="mono" x="28" y="80" font-size="18"><tspan class="grn">➜</tspan><tspan class="cyn" dx="12">lab</tspan><tspan class="fg" dx="14">asphyxia ps -t</tspan><tspan class="cyn" dx="10">scanme.nmap.org</tspan><tspan class="fg" dx="10">--top-ports</tspan><tspan class="org" dx="10">1000</tspan><tspan class="fg" dx="10">--sV</tspan></text>
+    <text class="mono" x="28" y="112" font-size="18"><tspan class="dim">--</tspan><tspan class="grn" dx="8">Opened ports</tspan><tspan class="dim" dx="8">for</tspan><tspan class="yel" dx="8">scanme.nmap.org</tspan><tspan class="dim" dx="8">--</tspan></text>
+    <text class="mono" x="28" y="144" font-size="18"><tspan class="cyn">scanme.nmap.org</tspan><tspan class="dim">:</tspan><tspan class="grn">22</tspan><tspan class="mag" x="250">ssh</tspan><tspan class="dim" x="330" fill-opacity="0.8">[SSH-2.0-OpenSSH_6.6.1p1]</tspan></text>
+    <text class="mono" x="28" y="172" font-size="18"><tspan class="cyn">scanme.nmap.org</tspan><tspan class="dim">:</tspan><tspan class="grn">80</tspan><tspan class="mag" x="250">http</tspan><tspan class="dim" x="330" fill-opacity="0.8">[HTTP/1.1 200 OK]</tspan></text>
+
+    <text class="mono" x="28" y="212" font-size="18"><tspan class="grn">➜</tspan><tspan class="cyn" dx="12">lab</tspan><tspan class="fg" dx="14">asphyxia as -s</tspan><tspan class="cyn" dx="10">192.168.1.0/24</tspan><tspan class="fg" dx="10">-o</tspan><tspan class="org" dx="10">jsonl</tspan><tspan class="yel" dx="10">|</tspan><tspan class="fg" dx="10">asphyxia ps --stdin --top-ports</tspan><tspan class="org" dx="10">100</tspan></text>
+    <text class="mono fg" x="28" y="240" font-size="17" fill-opacity="0.92">{"ip":"192.168.1.42","port":443,"proto":"tcp","latency_ms":3,"status":"open"}</text>
+  </g>
+
+  <!-- flag chips -->
+  <g transform="translate(72, 604)" class="mono" font-size="14">
+    <g>
+      <rect x="0" y="-18" width="45" height="26" rx="13" fill="#ffffff" fill-opacity="0.05" stroke="#2a313c"/>
+      <text class="dim" x="22" y="0" text-anchor="middle">ps</text>
+    </g>
+    <g transform="translate(55, 0)">
+      <rect x="0" y="-18" width="45" height="26" rx="13" fill="#ffffff" fill-opacity="0.05" stroke="#2a313c"/>
+      <text class="dim" x="22" y="0" text-anchor="middle">as</text>
+    </g>
+    <g transform="translate(110, 0)">
+      <rect x="0" y="-18" width="120" height="26" rx="13" fill="#ffffff" fill-opacity="0.05" stroke="#2a313c"/>
+      <text class="dim" x="60" y="0" text-anchor="middle">--top-ports</text>
+    </g>
+    <g transform="translate(240, 0)">
+      <rect x="0" y="-18" width="70" height="26" rx="13" fill="#ffffff" fill-opacity="0.05" stroke="#2a313c"/>
+      <text class="dim" x="35" y="0" text-anchor="middle">--udp</text>
+    </g>
+    <g transform="translate(320, 0)">
+      <rect x="0" y="-18" width="70" height="26" rx="13" fill="#ffffff" fill-opacity="0.05" stroke="#2a313c"/>
+      <text class="dim" x="35" y="0" text-anchor="middle">--syn</text>
+    </g>
+    <g transform="translate(400, 0)">
+      <rect x="0" y="-18" width="62" height="26" rx="13" fill="#ffffff" fill-opacity="0.05" stroke="#2a313c"/>
+      <text class="dim" x="31" y="0" text-anchor="middle">--sV</text>
+    </g>
+    <g transform="translate(472, 0)">
+      <rect x="0" y="-18" width="78" height="26" rx="13" fill="#ffffff" fill-opacity="0.05" stroke="#2a313c"/>
+      <text class="dim" x="39" y="0" text-anchor="middle">--nmap</text>
+    </g>
+    <g transform="translate(560, 0)">
+      <rect x="0" y="-18" width="95" height="26" rx="13" fill="#ffffff" fill-opacity="0.05" stroke="#2a313c"/>
+      <text class="dim" x="47" y="0" text-anchor="middle">--resume</text>
+    </g>
+    <g transform="translate(665, 0)">
+      <rect x="0" y="-18" width="172" height="26" rx="13" fill="#F74C00" fill-opacity="0.10" stroke="#F74C00" stroke-opacity="0.35"/>
+      <text class="org" x="86" y="0" text-anchor="middle">json · csv · grep</text>
+    </g>
+  </g>
+
+  <text class="mono dim" x="1208" y="604" font-size="14" text-anchor="end">github.com/jtprogru/asphyxia</text>
+</svg>
