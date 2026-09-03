@@ -14,6 +14,8 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::time::Duration;
 
+use crate::iface;
+
 /// Maximum number of banner bytes read from a service.
 const BANNER_LIMIT: usize = 512;
 
@@ -45,7 +47,9 @@ pub fn detect(ip: &str, port: u16, timeout: Duration) -> (Option<String>, Option
 /// if it is silent, nudge it with an HTTP request and read again. Returns the
 /// sanitized first line, or `None` if nothing readable came back.
 fn grab_banner(addr: SocketAddr, timeout: Duration) -> Option<String> {
-    let mut stream = TcpStream::connect_timeout(&addr, timeout).ok()?;
+    // Bind to `--interface` when set (a no-op otherwise) so the banner grab
+    // follows the same route the port probe did.
+    let mut stream = iface::tcp_connect_timeout(addr, timeout).ok()?;
     // Cap the read wait so a chatty-but-slow service cannot stall the scan.
     let read_timeout = timeout.min(Duration::from_secs(3));
     stream.set_read_timeout(Some(read_timeout)).ok()?;
