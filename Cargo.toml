@@ -26,6 +26,7 @@ serde_json = "1"
 toml = "0.8"
 ctrlc = "3.4"
 socket2 = { version = "0.5", features = ["all"] }
+libc = "0.2"
 pcap = "2.5"
 
 [dev-dependencies]

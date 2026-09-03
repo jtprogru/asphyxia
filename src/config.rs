@@ -1,7 +1,8 @@
 //! Configuration profiles loaded from `~/.asphyxia.toml`.
 //!
 //! A config file supplies defaults for repeated runs (timeout, concurrency,
-//! retries, output format) so common options need not be retyped every time.
+//! retries, output format, bind interface) so common options need not be
+//! retyped every time.
 //! Every field is optional; a missing field simply falls back to the built-in
 //! default. Command-line flags always win over the config — the merge that
 //! enforces that precedence lives in `main`, which knows which flags the user
@@ -34,6 +35,8 @@ pub struct Config {
     pub rate: Option<u32>,
     /// Output format name (`text`, `json`, `jsonl`, `csv`, `grep`).
     pub output: Option<String>,
+    /// Network interface to bind every probe to (e.g. `en0`).
+    pub interface: Option<String>,
 }
 
 impl Config {
@@ -89,6 +92,12 @@ mod tests {
         assert_eq!(cfg.concurrency, Some(128));
         assert_eq!(cfg.retries, Some(2));
         assert_eq!(cfg.output_format(), Some(OutputFormat::Json));
+    }
+
+    #[test]
+    fn parses_the_bind_interface() {
+        let cfg = Config::from_toml_str("interface = \"en0\"\n").unwrap();
+        assert_eq!(cfg.interface.as_deref(), Some("en0"));
     }
 
     #[test]

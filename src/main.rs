@@ -334,6 +334,7 @@ fn resolve_options(args: &mut Args, matches: &ArgMatches, config: &Config) {
             rate,
             timing,
             output,
+            interface,
             ..
         }
         | Args::AddressScan {
@@ -343,6 +344,7 @@ fn resolve_options(args: &mut Args, matches: &ArgMatches, config: &Config) {
             rate,
             timing,
             output,
+            interface,
             ..
         } => {
             // Layer 1: config fills anything not set on the command line.
@@ -350,6 +352,9 @@ fn resolve_options(args: &mut Args, matches: &ArgMatches, config: &Config) {
                 && let Some(v) = config.timeout
             {
                 *timeout = v;
+            }
+            if !from_cli("interface") && config.interface.is_some() {
+                *interface = config.interface.clone();
             }
             if !from_cli("concurrency")
                 && let Some(v) = config.concurrency
@@ -395,6 +400,16 @@ fn main() {
     let matches = Args::command().get_matches();
     let mut args = Args::from_arg_matches(&matches).expect("clap builds valid Args");
     resolve_options(&mut args, &matches, &Config::load());
+
+    // Pin every probe to the requested interface before scanning. A bad or
+    // unusable interface (unknown name, or a bind that needs privileges we lack)
+    // is a hard error: silently scanning over the wrong route would be worse.
+    if let Some(name) = args.interface()
+        && let Err(e) = asphyxia::iface::install(name)
+    {
+        eprintln!("{}", e.red());
+        std::process::exit(2);
+    }
 
     // Size the global rayon pool for I/O-bound scanning before any scan runs.
     init_scan_pool(args.concurrency());

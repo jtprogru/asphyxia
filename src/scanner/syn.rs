@@ -24,7 +24,7 @@
 //! IPv4 only: IPv6 SYN scanning is not implemented and callers fall back.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -202,9 +202,12 @@ pub fn raw_socket_available() -> bool {
 
 /// Discover the local IPv4 address the kernel would use to reach `dst`, without
 /// sending anything: connecting a UDP socket only sets its route.
+///
+/// The socket is opened through the interface-binding helper, so with
+/// `--interface` the source address (and hence the pcap capture device chosen
+/// from it) follows the requested link rather than the default route.
 fn local_ipv4_for(dst: Ipv4Addr) -> Option<Ipv4Addr> {
-    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect(SocketAddr::new(dst.into(), 80)).ok()?;
+    let socket = crate::iface::udp_connect(SocketAddr::new(dst.into(), 80)).ok()?;
     match socket.local_addr().ok()?.ip() {
         std::net::IpAddr::V4(v4) => Some(v4),
         std::net::IpAddr::V6(_) => None,

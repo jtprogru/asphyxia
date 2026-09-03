@@ -758,3 +758,57 @@ fn text_output_remains_the_default() {
         .success()
         .stdout(predicate::str::contains("Game Over"));
 }
+
+#[test]
+fn interface_flag_is_documented_in_help() {
+    // Both subcommands accept `-e/--interface`; it must show up in their help.
+    asphyxia()
+        .args(["ps", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--interface"));
+    asphyxia()
+        .args(["as", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--interface"));
+}
+
+#[test]
+fn unknown_interface_fails_before_scanning() {
+    // A bogus interface name is rejected up front (non-zero exit) rather than
+    // silently scanning over the default route. The message mentions the
+    // interface — on supported platforms "no such network interface", on
+    // unsupported ones "not supported on this platform"; both contain the word.
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "80",
+            "-e",
+            "definitely-not-an-iface-9999",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("interface"));
+}
+
+#[test]
+fn config_interface_is_validated_too() {
+    // An interface supplied via the config file is validated the same way as
+    // the flag: a bogus name aborts the scan.
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("asphyxia-iface-config-{}.toml", std::process::id()));
+    std::fs::write(&path, "interface = \"definitely-not-an-iface-9999\"\n").unwrap();
+
+    asphyxia()
+        .env("ASPHYXIA_CONFIG", &path)
+        .args(["ps", "-t", "127.0.0.1", "-s", "80"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("interface"));
+
+    let _ = std::fs::remove_file(&path);
+}

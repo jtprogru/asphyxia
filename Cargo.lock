@@ -70,6 +70,7 @@ dependencies = [
  "ctrlc",
  "indicatif",
  "ipnetwork",
+ "libc",
  "owo-colors",
  "pcap",
  "predicates",

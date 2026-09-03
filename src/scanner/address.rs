@@ -1,9 +1,10 @@
 use ipnetwork::IpNetwork;
 use rayon::prelude::*;
 use std::io::ErrorKind;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
+use crate::iface;
 use crate::utils::progress_bar;
 
 /// An available host together with how long the availability probe took.
@@ -124,7 +125,9 @@ fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> Option<HostHit> {
     // Respect the global rate limit (no-op when none is installed).
     crate::rate::gate();
     let start = Instant::now();
-    match TcpStream::connect_timeout(&SocketAddr::new(ip, port), timeout) {
+    // Probe through the interface-binding helper so `--interface` pins host
+    // discovery to the requested link (a no-op when none was set).
+    match iface::tcp_connect_timeout(SocketAddr::new(ip, port), timeout) {
         // Port is open: the host is unambiguously up.
         Ok(_) => Some(HostHit {
             ip,

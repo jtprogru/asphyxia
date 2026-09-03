@@ -1,6 +1,8 @@
 use std::io::ErrorKind;
-use std::net::{IpAddr, Ipv6Addr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv6Addr, ToSocketAddrs};
 use std::time::{Duration, Instant};
+
+use crate::iface;
 
 /// Default timeout for a single TCP connection attempt.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -181,7 +183,9 @@ fn probe_port(host: &str, port: u16, timeout: Duration) -> Probe {
         return Probe::Closed;
     };
     let start = Instant::now();
-    match TcpStream::connect_timeout(&socket_addr, timeout) {
+    // Open through the interface-binding helper so `--interface` pins the probe
+    // to the requested link (a no-op when none was set).
+    match iface::tcp_connect_timeout(socket_addr, timeout) {
         Ok(_) => Probe::Open(start.elapsed()),
         Err(e)
             if matches!(
@@ -279,8 +283,6 @@ pub fn scan_udp_port(
 
 /// Send one UDP datagram and classify what comes back.
 fn probe_udp(host: &str, port: u16, timeout: Duration) -> UdpProbe {
-    use std::net::UdpSocket;
-
     // Respect the global rate limit (no-op when none is installed).
     crate::rate::gate();
 
@@ -293,18 +295,11 @@ fn probe_udp(host: &str, port: u16, timeout: Duration) -> UdpProbe {
         return UdpProbe::Closed;
     };
 
-    // Bind an ephemeral local socket in the target's address family.
-    let bind_addr = if target.is_ipv4() {
-        "0.0.0.0:0"
-    } else {
-        "[::]:0"
-    };
-    let Ok(socket) = UdpSocket::bind(bind_addr) else {
+    // Bind an ephemeral local socket in the target's address family, pinned to
+    // `--interface` when one was requested (a no-op otherwise), and connect it.
+    let Ok(socket) = iface::udp_connect(target) else {
         return UdpProbe::OpenFiltered;
     };
-    if socket.connect(target).is_err() {
-        return UdpProbe::OpenFiltered;
-    }
     if socket.set_read_timeout(Some(timeout)).is_err() {
         return UdpProbe::OpenFiltered;
     }

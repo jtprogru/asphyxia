@@ -74,6 +74,10 @@ Examples:
   # Raise concurrency to speed up a large subnet scan
   asphyxia as -s 10.0.0.0/22 --concurrency 512
 
+  # Send every probe through a specific interface (like `ssh -B en0` / `nmap -e`)
+  asphyxia ps -t fin.example.com --top-ports 1000 --interface en0
+  asphyxia as -s 10.20.0.0/24 -e en0
+
   # Retry probes on a lossy network to cut false negatives (refused ports are not retried)
   asphyxia ps -t example.com --top-ports 1000 --retries 2
 
@@ -106,6 +110,7 @@ Required arguments:
     --rate <PPS>                 Cap connection attempts per second (0 = no cap)
     -T, --timing <0-5>           Timing profile (paranoid..insane) presetting the tunables
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
+    -e, --interface <NAME>       Bind every probe to this interface (e.g. en0), like `ssh -B`
 
   For address scanning (as):
     -s, --subnet <SUBNET>        Scan a subnet (e.g., 192.168.1.0/24 or 2001:db8::/120)
@@ -113,6 +118,7 @@ Required arguments:
     -r, --range <START> <END>    Scan a range of IP addresses
     --Pn                         Skip host discovery; treat every target as up
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
+    -e, --interface <NAME>       Bind every probe to this interface (e.g. en0), like `ssh -B`
 "#
 )]
 pub enum Args {
@@ -208,6 +214,15 @@ pub enum Args {
         #[arg(short = 'c', long, value_name = "N", default_value_t = 256)]
         concurrency: usize,
 
+        /// Bind every probe to this network interface (e.g. en0), like `ssh -B`
+        #[arg(
+            short = 'e',
+            long = "interface",
+            visible_alias = "iface",
+            value_name = "NAME"
+        )]
+        interface: Option<String>,
+
         /// Extra retries per probe on no answer (timeout); refused ports are final
         #[arg(long, value_name = "N", default_value_t = 0)]
         retries: u32,
@@ -263,6 +278,15 @@ pub enum Args {
         #[arg(short = 'c', long, value_name = "N", default_value_t = 256)]
         concurrency: usize,
 
+        /// Bind every probe to this network interface (e.g. en0), like `ssh -B`
+        #[arg(
+            short = 'e',
+            long = "interface",
+            visible_alias = "iface",
+            value_name = "NAME"
+        )]
+        interface: Option<String>,
+
         /// Extra retries per probe on no answer (timeout); refused ports are final
         #[arg(long, value_name = "N", default_value_t = 0)]
         retries: u32,
@@ -300,6 +324,16 @@ impl Args {
     pub fn output_format(&self) -> OutputFormat {
         match self {
             Args::PortScan { output, .. } | Args::AddressScan { output, .. } => *output,
+        }
+    }
+
+    /// The network interface every probe should be bound to, if requested,
+    /// regardless of which subcommand was invoked.
+    pub fn interface(&self) -> Option<&str> {
+        match self {
+            Args::PortScan { interface, .. } | Args::AddressScan { interface, .. } => {
+                interface.as_deref()
+            }
         }
     }
 

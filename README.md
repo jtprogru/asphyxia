@@ -31,9 +31,10 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Machine-readable output** — emit results as JSON, JSON Lines, CSV, or greppable text with `--output`, and write them straight to a file with `--output-file`, for piping into other tools.
 
 - **Target sources** — scan a single host, pipe targets in with `--stdin`, or read them from a file with `-i/--target-file`; hosts, IPs, and CIDRs are all accepted, and CIDRs in a file are expanded.
-- **Configuration file** — set defaults (timeout, concurrency, retries, output format) in `~/.asphyxia.toml`; command-line flags override it.
+- **Configuration file** — set defaults (timeout, concurrency, retries, output format, bind interface) in `~/.asphyxia.toml`; command-line flags override it.
 - **Resumable scans** — checkpoint a long port scan with `--resume <file>` and pick it up where it stopped after a Ctrl-C, crash, or dropped link.
 - **SYN/stealth scan** — half-open SYN scanning with `--syn` (IPv4, needs privileges): SYNs are sent over a raw socket and replies captured with libpcap/BPF, so it works the same on macOS and Linux, with automatic fallback to the connect scan.
+- **Interface binding** — pin every probe to a specific network interface with `-e/--interface` (like `ssh -B` or `nmap -e`), so a host reachable only through a VPN, tunnel, or a more specific route is scanned over the right link instead of the default route.
 
 > Note: IPv6 subnet and range scans are capped at 65 536 addresses (e.g. a `/112`), since larger IPv6 spaces are impractical to walk exhaustively.
 
@@ -164,6 +165,7 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `--nmap` | After the scan, run nmap on each host's open ports for a deep dive |
 | `--nmap-args <ARGS>` | Custom nmap arguments (replace the default `-sV -sC`); implies `--nmap` |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
+| `-e, --interface <NAME>` (`--iface`) | Bind every probe to this network interface (e.g. `en0`), like `ssh -B` / `nmap -e` |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 | `--retries <N>` | Extra retries per probe on no answer/timeout (default: 0); refused ports are never retried |
 | `--rate <PPS>` | Cap connection attempts per second across the whole scan (0 or unset: no cap) |
@@ -216,6 +218,23 @@ Details and limitations:
 - **Diagnostics** — set `ASPHYXIA_SYN_DEBUG=1` to print capture diagnostics to stderr (the chosen interface and datalink, each captured reply, and each probe's outcome), useful when a scan unexpectedly falls back.
 - `--syn` and `--udp` are mutually exclusive.
 
+#### Selecting the outgoing interface (`-e`/`--interface`)
+
+By default the OS routes every probe through whatever the routing table picks — usually the default route. When a host is reachable only through a particular interface (a VPN, a tunnel, a secondary link carrying a more specific route whose source address the default route never uses), the probes have to be pinned to that interface, exactly as `ssh -B en0` or `nmap -e en0` do. Otherwise the kernel sends from the wrong source address and the replies never come back, so an open port looks closed. `-e/--interface` binds every probe socket to the named interface for both `ps` and `as`.
+
+```bash
+# Scan through en0 specifically, whatever the default route would pick
+asphyxia ps -t fin.example.com --top-ports 1000 --interface en0
+asphyxia as -s 10.20.0.0/24 -e en0
+```
+
+Details and limitations:
+
+- **Platforms** — macOS/BSD-family and illumos/Solaris use `IP_BOUND_IF`/`IPV6_BOUND_IF` (no privileges needed); Linux/Android use `SO_BINDTODEVICE`, which needs root or `CAP_NET_RAW`. On any other platform the flag is rejected up front rather than silently ignored.
+- **Fail fast** — an unknown interface name, or a bind the OS refuses (e.g. `SO_BINDTODEVICE` without privileges), is reported before the scan starts and exits non-zero, so a scan never runs over the wrong route while pretending it was pinned.
+- **Coverage** — the interface applies to the connect scan, UDP probes, `--sV` banner grabs, and host discovery. With `--syn` it also steers the source address and the libpcap capture device, so SYN scanning follows the same link.
+- **Config** — set `interface = "en0"` in `~/.asphyxia.toml` to make it the default; a command-line `-e` still overrides it.
+
 #### Resuming a long scan (`--resume`)
 
 A big port scan — many hosts × `--all-ports` — can run for a long time, and losing it to Ctrl-C, a dropped connection, or a crash means starting over. `--resume <file>` checkpoints progress to a state file as the scan runs. Re-run the exact same command with the same file and it picks up where it left off, skipping completed `(host, port)` work and keeping the results already found.
@@ -264,6 +283,7 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 | `--exclude <SPEC>` | Exclude hosts/CIDRs from the scan (repeatable; each value may be comma-separated) |
 | `--exclude-file <PATH>` | Exclude hosts/CIDRs listed in a file (one per line; `#` comments allowed) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
+| `-e, --interface <NAME>` (`--iface`) | Bind every probe to this network interface (e.g. `en0`), like `ssh -B` / `nmap -e` |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
 | `--retries <N>` | Extra retries per probe on no answer/timeout (default: 0); refused ports are never retried |
 | `--rate <PPS>` | Cap connection attempts per second across the whole scan (0 or unset: no cap) |
@@ -348,6 +368,7 @@ concurrency = 512     # max concurrent connection attempts
 retries     = 1       # extra retries per probe on no answer
 rate        = 2000    # cap probes per second (0 or omitted = no cap)
 output      = "jsonl" # default output format: text | json | jsonl | csv | grep
+interface   = "en0"   # bind every probe to this interface (like `ssh -B` / `nmap -e`)
 ```
 
 With that config, `asphyxia ps -t example.com --top-ports 100` runs with a 500 ms timeout, 512-way concurrency, one retry, and JSONL output — while `asphyxia ps -t example.com --top-ports 100 -o text --timeout 2000` overrides both the format and the timeout for that run. Point `ASPHYXIA_CONFIG` at a different path to use an alternate file. An invalid config is reported on stderr and then ignored rather than aborting the scan.
