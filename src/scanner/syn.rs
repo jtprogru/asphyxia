@@ -209,8 +209,8 @@ pub fn raw_socket_available() -> bool {
 fn local_ipv4_for(dst: Ipv4Addr) -> Option<Ipv4Addr> {
     let socket = crate::iface::udp_connect(SocketAddr::new(dst.into(), 80)).ok()?;
     match socket.local_addr().ok()?.ip() {
-        std::net::IpAddr::V4(v4) => Some(v4),
-        std::net::IpAddr::V6(_) => None,
+        IpAddr::V4(v4) => Some(v4),
+        IpAddr::V6(_) => None,
     }
 }
 
