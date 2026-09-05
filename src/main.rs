@@ -68,7 +68,7 @@ fn build_exclude_set(specs: &[String], file: Option<&Path>) -> Result<ExcludeSet
 /// Hand each scanned host's open ports off to nmap, grouping the flat
 /// `(host_index, hit)` list by host. Nothing runs for hosts with no open ports.
 ///
-/// A missing nmap binary is reported once with an installation hint rather than
+/// A missing nmap binary is reported once with an install hint rather than
 /// failing per host; any other spawn error is surfaced per host.
 fn run_nmap_handoff(resolved: &[(String, String)], opened: &[(usize, Finding)], extra: &[String]) {
     use std::io::ErrorKind;
@@ -705,7 +705,7 @@ fn main() {
                                 );
                                 current = Some(*i);
                             }
-                            // Baseline is host:port; annotate with the status
+                            // Base line is host:port; annotate with the status
                             // when it carries information beyond "open" (UDP
                             // open|filtered), and with the service/banner when
                             // --sV identified one.

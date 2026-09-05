@@ -34,7 +34,7 @@ pub struct StateFinding {
 /// The persisted state of an in-progress or completed scan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanState {
-    /// Transport of the scan (`"tcp"` or `"udp"`) — resume must match.
+    /// Transport of the scan (`"tcp"` or `"udp"`) — a resume must match.
     pub proto: String,
     /// Resolved target IPs, in order; the order is part of the job identity.
     pub targets: Vec<String>,

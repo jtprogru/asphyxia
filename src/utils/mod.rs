@@ -31,7 +31,7 @@ pub fn init_scan_pool(concurrency: usize) {
         .num_threads(threads)
         .stack_size(512 * 1024)
         .build_global()
-        .expect("failed to initialise the scan thread pool");
+        .expect("failed to initialize the scan thread pool");
 }
 
 /// Build a styled progress bar for a scan of `total` items.

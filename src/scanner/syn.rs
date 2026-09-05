@@ -209,8 +209,8 @@ pub fn raw_socket_available() -> bool {
 fn local_ipv4_for(dst: Ipv4Addr) -> Option<Ipv4Addr> {
     let socket = crate::iface::udp_connect(SocketAddr::new(dst.into(), 80)).ok()?;
     match socket.local_addr().ok()?.ip() {
-        IpAddr::V4(v4) => Some(v4),
-        IpAddr::V6(_) => None,
+        std::net::IpAddr::V4(v4) => Some(v4),
+        std::net::IpAddr::V6(_) => None,
     }
 }
 
@@ -232,7 +232,7 @@ fn src_port_for(dst_port: u16) -> u16 {
 ///
 /// Returns `None` when the SYN scan cannot run — the receiver was never
 /// installed (no [`init_receiver`], or it failed), a raw socket cannot be
-/// opened, or send errored — signaling the caller to fall back to a
+/// opened, or the send errored — signaling the caller to fall back to a
 /// connect probe. Replies are read by the receiver's pcap capture, never by a
 /// `recv()` here, so this works on macOS as well as Linux.
 pub fn syn_scan_port(dst: Ipv4Addr, dst_port: u16, timeout: Duration) -> Option<SynOutcome> {
@@ -592,7 +592,7 @@ mod tests {
         assert_eq!(seg[12] >> 4, 5, "data offset should be 5 words");
         assert_eq!(seg[13], TCP_SYN, "only the SYN flag should be set");
 
-        // Re-check summing the pseudo-header + segment must verify to zero.
+        // Re-checksumming the pseudo-header + segment must verify to zero.
         let mut pseudo = Vec::new();
         pseudo.extend_from_slice(&src.octets());
         pseudo.extend_from_slice(&dst.octets());
