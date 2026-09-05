@@ -21,7 +21,7 @@ use asphyxia::utils::{
     read_targets_from_stdin,
 };
 
-/// One reportable port result, normalised across TCP and UDP so the output
+/// One reportable port result, normalized across TCP and UDP so the output
 /// path does not care which protocol produced it.
 struct Finding {
     port: u16,
@@ -68,7 +68,7 @@ fn build_exclude_set(specs: &[String], file: Option<&Path>) -> Result<ExcludeSet
 /// Hand each scanned host's open ports off to nmap, grouping the flat
 /// `(host_index, hit)` list by host. Nothing runs for hosts with no open ports.
 ///
-/// A missing nmap binary is reported once with an install hint rather than
+/// A missing nmap binary is reported once with an installation hint rather than
 /// failing per host; any other spawn error is surfaced per host.
 fn run_nmap_handoff(resolved: &[(String, String)], opened: &[(usize, Finding)], extra: &[String]) {
     use std::io::ErrorKind;
@@ -705,7 +705,7 @@ fn main() {
                                 );
                                 current = Some(*i);
                             }
-                            // Base line is host:port; annotate with the status
+                            // Baseline is host:port; annotate with the status
                             // when it carries information beyond "open" (UDP
                             // open|filtered), and with the service/banner when
                             // --sV identified one.
@@ -778,7 +778,7 @@ fn main() {
 
             // Enumerate-filter-scan only when it earns its keep (exclusions or
             // -Pn); otherwise keep the lazy subnet/range scan that never
-            // materialises the whole address space.
+            // materializes the whole address space.
             let materialize = no_discovery || !exclude_set.is_empty();
 
             let available: Vec<address::HostHit> = if let Some(subnet_str) = subnet {

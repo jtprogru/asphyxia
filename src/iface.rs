@@ -1,11 +1,11 @@
 //! Binding scan sockets to a specific network interface (`-e`/`--interface`).
 //!
-//! By default the OS routes every probe through whatever the routing table
+//! By default, the OS routes every probe through whatever the routing table
 //! picks — usually the default route. When a host is reachable only through a
 //! particular interface (a VPN, a tunnel, a secondary link carrying a more
 //! specific route whose source address the default route never uses), the
 //! probes have to be pinned to that interface, exactly as `ssh -B en0` or
-//! `nmap -e en0` do. Otherwise the kernel sends from the wrong source address
+//! `nmap -e en0` do. Otherwise, the kernel sends from the wrong source address
 //! and the replies never come back, so an open port looks closed.
 //!
 //! Like the rate limiter, the chosen interface is installed once before the
@@ -218,7 +218,7 @@ mod imp {
             let remaining = (timeout - elapsed)
                 .as_millis()
                 .clamp(1, libc::c_int::MAX as u128) as libc::c_int;
-            // SAFETY: `pollfd` is a valid, initialised single-element array for
+            // SAFETY: `pollfd` is a valid, initialized single-element array for
             // the duration of the call.
             let rv = unsafe { libc::poll(&mut pollfd, 1, remaining) };
             if rv < 0 {

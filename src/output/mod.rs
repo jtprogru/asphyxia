@@ -1,6 +1,6 @@
 //! Machine-readable output for scan results.
 //!
-//! By default the scanner prints a human-friendly, colorized report. The
+//! By default, the scanner prints a human-friendly, colorized report. The
 //! formats here turn each result into a structured [`ScanRecord`] so the
 //! scanner can act as the first stage of a pipeline (e.g. feeding a network
 //! map or coverage analyzer) rather than only being read by a human.

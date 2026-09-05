@@ -38,7 +38,7 @@ pub fn nmap_args(host: &str, ports: &[u16], extra: &[String]) -> Vec<String> {
 
 /// Split a raw `--nmap-args` string into individual arguments on whitespace.
 ///
-/// This is a simple split, not a full shell parser: it does not honour quotes.
+/// This is a simple split, not a full shell parser: it does not honor quotes.
 /// Empty input yields no arguments (the defaults then apply).
 pub fn split_extra_args(raw: &str) -> Vec<String> {
     raw.split_whitespace().map(|s| s.to_string()).collect()

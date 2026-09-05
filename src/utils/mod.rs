@@ -24,7 +24,7 @@ pub const MAX_CONCURRENCY: usize = 1024;
 ///
 /// # Panics
 ///
-/// Panics if the global pool has already been initialised (e.g. called twice).
+/// Panics if the global pool has already been initialized (e.g. called twice).
 pub fn init_scan_pool(concurrency: usize) {
     let threads = concurrency.clamp(1, MAX_CONCURRENCY);
     rayon::ThreadPoolBuilder::new()
@@ -89,7 +89,7 @@ pub fn read_targets_from_file(path: &std::path::Path) -> std::io::Result<Vec<Str
 
 /// Parse scan targets from any line source.
 ///
-/// The format is auto-detected per line so a hand-written list and the machine
+/// The format is auto-detected per line so a handwritten list and the machine
 /// output of `asphyxia as` both work without a flag:
 ///
 /// * a line beginning with `{` or `[` is parsed as JSON and every `ip` field it
