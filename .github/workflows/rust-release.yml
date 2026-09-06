@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - '*'
+  # Manual runs build every target and upload the archives as artifacts, so a
+  # release can be rehearsed from any branch. Everything that publishes is
+  # gated on a tag ref below, so a dispatch run cannot ship anything.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -60,9 +64,72 @@ jobs:
           name: binaries-${{ matrix.rust_target }}
           path: asphyxia-${{ matrix.rust_target }}.zip
 
+  build-musl:
+    name: Build ${{ matrix.rust_target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Alpine is musl-native, so this is a plain native build, not a cross-compile.
+      # The musl target links statically by default and Alpine ships libpcap.a, so the
+      # result carries libpcap with it and runs on any Linux of the same architecture,
+      # whatever libc that host has.
+      - name: Build in Alpine
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            -e CARGO_TERM_COLOR=always \
+            -e RUST_TARGET \
+            rust:alpine sh -eu -c '
+              apk add --no-cache musl-dev libpcap-dev
+              cargo build --release --locked --target "$RUST_TARGET"
+            '
+
+      - name: Verify the binary is static
+        run: |
+          bin="target/${{ matrix.rust_target }}/release/asphyxia"
+          file "$bin"
+          # A static musl binary pulls in nothing at runtime, so it carries no NEEDED
+          # entries. The shape differs per architecture: aarch64 has no dynamic section
+          # at all, while x86_64 is a static-pie and keeps one for self-relocation, so
+          # NEEDED is what to check rather than the presence of the section.
+          if readelf -d "$bin" | grep -q NEEDED; then
+            echo "::error::$bin is dynamically linked, expected a static musl build"
+            readelf -d "$bin"
+            exit 1
+          fi
+
+      - name: Package binary
+        shell: bash
+        run: |
+          archive="asphyxia-${{ matrix.rust_target }}.zip"
+          mkdir -p dist
+          cp "target/${{ matrix.rust_target }}/release/asphyxia" dist/
+          chmod +x dist/asphyxia
+          (cd dist && zip "../$archive" asphyxia)
+
+      - name: Upload binary as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: binaries-${{ matrix.rust_target }}
+          path: asphyxia-${{ matrix.rust_target }}.zip
+
   publish-crate:
     name: Publish to crates.io
-    needs: build-and-release
+    needs: [build-and-release, build-musl]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -82,7 +149,8 @@ jobs:
         run: cargo publish --locked
 
   create-release:
-    needs: build-and-release
+    needs: [build-and-release, build-musl]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Download all build artifacts
@@ -120,6 +188,7 @@ jobs:
 
   updatehomebrew:
     needs: create-release
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout brew tap repo

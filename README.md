@@ -67,8 +67,11 @@ cargo install --git https://github.com/jtprogru/asphyxia
 
 Download the archive for your platform from the [latest release](https://github.com/jtprogru/asphyxia/releases/latest), unzip it, and place the `asphyxia` binary somewhere on your `PATH`. Builds are provided for:
 
-- Linux: `x86_64`, `aarch64`
+- Linux (glibc): `x86_64`, `aarch64`
+- Linux (musl, static): `x86_64`, `aarch64`
 - macOS: `aarch64` (Apple Silicon)
+
+The glibc archives are built on Ubuntu 24.04 and need glibc 2.39 or newer. On an older distribution — or on Alpine and other musl systems — take the `*-linux-musl` archive instead: it is statically linked, libpcap included, and needs nothing from the host.
 
 Each archive is shipped with a detached GPG signature (`.asc`). After importing the signing key you can verify an archive with:
 
@@ -211,7 +214,7 @@ sudo asphyxia ps -t scanme.nmap.org --top-ports 1000 --syn
 Details and limitations:
 
 - **Privileges** — forging raw packets and capturing replies requires root or `CAP_NET_RAW`. Without them, asphyxia prints a notice and automatically falls back to the connect scan, so the command still works unprivileged (just not stealthily).
-- **libpcap** — the reply capture uses libpcap. It is present by default on macOS; on Linux install `libpcap` (e.g. `libpcap-dev`/`libpcap0.8` on Debian/Ubuntu, `libpcap` on Alpine/Arch). If the capture can't be opened, asphyxia warns and falls back to the connect scan.
+- **libpcap** — the reply capture uses libpcap. It is present by default on macOS; on Linux install `libpcap` (e.g. `libpcap-dev`/`libpcap0.8` on Debian/Ubuntu, `libpcap` on Alpine/Arch). The static musl release builds already carry libpcap, so they need no such package. If the capture can't be opened, asphyxia warns and falls back to the connect scan.
 - **IPv4 only** — IPv6 targets always use the connect scan.
 - **Correctness fallback** — a port that a SYN probe reports as *filtered* (no reply) is re-checked with a connect probe, so an open port is never missed if a reply is lost. Definitive open/closed SYN results are used directly.
 - **High-latency links** — a SYN probe waits up to `--timeout` for its reply. On slow paths (distant hosts, VPNs) a reply can arrive just after the deadline and the probe then falls back to a connect check (still correct, just not stealthy). Raise `--timeout` on such links so SYN replies land in time.
