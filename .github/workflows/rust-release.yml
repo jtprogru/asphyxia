@@ -221,7 +221,6 @@ jobs:
       - name: Generate Formula
         run: |
           TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
 
           sha() { sha256sum "artifacts/$1" | awk '{print $1}'; }
           url() { echo "https://github.com/jtprogru/asphyxia/releases/download/${TAG}/$1"; }
@@ -232,11 +231,16 @@ jobs:
           LINUX_ARM="asphyxia-aarch64-unknown-linux-gnu.zip"
 
           mkdir -p Formula
+          # Two deviations from Cargo.toml, both required by the tap's CI:
+          # `desc` drops the leading article that FormulaAudit/Desc rejects, and
+          # there is no `version` stanza because brew scans the version out of the
+          # release URL and audit calls an explicit one redundant. Both were once
+          # hand-fixed in the tap and then reverted by this generator, so they live
+          # here now.
           cat <<EOL > Formula/asphyxia.rb
           class Asphyxia < Formula
-            desc "A fast and efficient network scanner written in Rust"
+            desc "Fast and efficient network scanner written in Rust"
             homepage "https://github.com/jtprogru/asphyxia"
-            version "${VERSION}"
 
             on_macos do
               on_intel do
