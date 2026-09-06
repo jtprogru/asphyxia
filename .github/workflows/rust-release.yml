@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - '*'
+  # Manual runs build every target and upload the archives as artifacts, so a
+  # release can be rehearsed from any branch. Everything that publishes is
+  # gated on a tag ref below, so a dispatch run cannot ship anything.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -120,6 +124,7 @@ jobs:
   publish-crate:
     name: Publish to crates.io
     needs: [build-and-release, build-musl]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -140,6 +145,7 @@ jobs:
 
   create-release:
     needs: [build-and-release, build-musl]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Download all build artifacts
@@ -177,6 +183,7 @@ jobs:
 
   updatehomebrew:
     needs: create-release
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout brew tap repo
