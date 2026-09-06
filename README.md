@@ -47,7 +47,7 @@ brew tap jtprogru/tap
 brew install jtprogru/tap/asphyxia
 ```
 
-The formula is published automatically to the [jtprogru/homebrew-tap](https://github.com/jtprogru/homebrew-tap) tap on every release and supports macOS (Apple Silicon) and Linux (x86_64 & arm64).
+The formula is published automatically to the [jtprogru/homebrew-tap](https://github.com/jtprogru/homebrew-tap) tap on every release and supports macOS (Apple Silicon & Intel) and Linux (x86_64 & arm64).
 
 ### Cargo
 
@@ -69,7 +69,7 @@ Download the archive for your platform from the [latest release](https://github.
 
 - Linux (glibc): `x86_64`, `aarch64`
 - Linux (musl, static): `x86_64`, `aarch64`
-- macOS: `aarch64` (Apple Silicon)
+- macOS: `aarch64` (Apple Silicon), `x86_64` (Intel)
 
 The glibc archives are built on Ubuntu 24.04 and need glibc 2.39 or newer. On an older distribution — or on Alpine and other musl systems — take the `*-linux-musl` archive instead: it is statically linked, libpcap included, and needs nothing from the host.
 
