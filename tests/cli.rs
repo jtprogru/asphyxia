@@ -12,7 +12,7 @@ fn asphyxia() -> Command {
     // Isolate every run from a real `~/.asphyxia.toml` on the developer's
     // machine by pointing the config loader at a path that does not exist, so
     // tests always start from the built-in defaults. Tests that exercise config
-    // behaviour set their own `ASPHYXIA_CONFIG`, which overrides this.
+    // behavior set their own `ASPHYXIA_CONFIG`, which overrides this.
     cmd.env("ASPHYXIA_CONFIG", "/nonexistent/asphyxia-test-config.toml");
     cmd
 }
@@ -392,13 +392,13 @@ fn target_file_missing_reports_a_clear_error() {
 
 #[test]
 fn config_supplies_defaults_that_flags_override() {
-    // A config setting the output to json applies when -o is absent; passing -o
+    // A config setting the output to JSON applies when -o is absent; passing -o
     // csv on the command line must win over it.
     let dir = std::env::temp_dir();
     let path = dir.join(format!("asphyxia-config-{}.toml", std::process::id()));
     std::fs::write(&path, "output = \"json\"\ntimeout = 250\n").unwrap();
 
-    // No -o: the config's json format is used (empty array on a closed port).
+    // No -o: the config's JSON format is used (empty array on a closed port).
     asphyxia()
         .env("ASPHYXIA_CONFIG", &path)
         .args(["ps", "-t", "127.0.0.1", "-s", "1"])
@@ -751,7 +751,7 @@ fn output_flag_rejects_unknown_format() {
 #[test]
 fn text_output_remains_the_default() {
     // Without `-o`, the human-facing banner is still printed: this pins the
-    // backwards-compatible default behaviour.
+    // backwards-compatible default behavior.
     asphyxia()
         .args(["ps", "-t", "127.0.0.1", "-s", "1"])
         .assert()

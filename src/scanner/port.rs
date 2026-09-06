@@ -28,7 +28,7 @@ enum Probe {
 /// definitive answer ([`Probe::Open`] or [`Probe::Closed`]). Only
 /// [`Probe::NoAnswer`] is retried. Returns the last outcome observed.
 ///
-/// With `retries == 0` this is a single attempt — the original behaviour.
+/// With `retries == 0` this is a single attempt — the original behavior.
 fn with_retries<F: FnMut() -> Probe>(retries: u32, mut probe: F) -> Probe {
     let mut outcome = Probe::NoAnswer;
     for _ in 0..=retries {

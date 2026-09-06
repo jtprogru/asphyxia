@@ -1,6 +1,6 @@
 //! Frequency-ordered list of the most commonly open TCP ports.
 //!
-//! The ordering is seeded from nmap's `nmap-services` top-port frequencies, so
+//! The ordering is seeded from Nmap's `nmap-services` top-port frequencies, so
 //! `--top-ports N` scans the N ports most likely to be open first. The list is
 //! baked into the binary; no external data file is needed.
 

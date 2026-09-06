@@ -1,7 +1,7 @@
 //! SYN / stealth scanning (`--syn`, `-sS`).
 //!
 //! A SYN scan sends a lone TCP SYN and never completes the handshake: a SYN/ACK
-//! reply means the port is open (we answer with a RST instead of an ACK), a RST
+//! reply means the port is open (we answer with an RST instead of an ACK), an RST
 //! means closed, and silence means filtered. It is faster and quieter than a
 //! full connect scan, but forging raw TCP/IP packets needs elevated privileges
 //! (root / `CAP_NET_RAW`).
@@ -209,8 +209,8 @@ pub fn raw_socket_available() -> bool {
 fn local_ipv4_for(dst: Ipv4Addr) -> Option<Ipv4Addr> {
     let socket = crate::iface::udp_connect(SocketAddr::new(dst.into(), 80)).ok()?;
     match socket.local_addr().ok()?.ip() {
-        std::net::IpAddr::V4(v4) => Some(v4),
-        std::net::IpAddr::V6(_) => None,
+        IpAddr::V4(v4) => Some(v4),
+        IpAddr::V6(_) => None,
     }
 }
 
@@ -227,12 +227,12 @@ fn src_port_for(dst_port: u16) -> u16 {
 
 /// Perform a single SYN probe against `dst:dst_port`: forge and send a SYN over
 /// a raw socket, then wait for the shared [`SynReceiver`] to observe the reply.
-/// A SYN/ACK is [`SynOutcome::Open`], a RST is [`SynOutcome::Closed`], and no
+/// A SYN/ACK is [`SynOutcome::Open`], an RST is [`SynOutcome::Closed`], and no
 /// reply within `timeout` is [`SynOutcome::Filtered`].
 ///
 /// Returns `None` when the SYN scan cannot run — the receiver was never
 /// installed (no [`init_receiver`], or it failed), a raw socket cannot be
-/// opened, or the send errored — signalling the caller to fall back to a
+/// opened, or the send errored — signaling the caller to fall back to a
 /// connect probe. Replies are read by the receiver's pcap capture, never by a
 /// `recv()` here, so this works on macOS as well as Linux.
 pub fn syn_scan_port(dst: Ipv4Addr, dst_port: u16, timeout: Duration) -> Option<SynOutcome> {

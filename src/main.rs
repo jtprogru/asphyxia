@@ -21,7 +21,7 @@ use asphyxia::utils::{
     read_targets_from_stdin,
 };
 
-/// One reportable port result, normalised across TCP and UDP so the output
+/// One reportable port result, normalized across TCP and UDP so the output
 /// path does not care which protocol produced it.
 struct Finding {
     port: u16,
@@ -778,7 +778,7 @@ fn main() {
 
             // Enumerate-filter-scan only when it earns its keep (exclusions or
             // -Pn); otherwise keep the lazy subnet/range scan that never
-            // materialises the whole address space.
+            // materializes the whole address space.
             let materialize = no_discovery || !exclude_set.is_empty();
 
             let available: Vec<address::HostHit> = if let Some(subnet_str) = subnet {

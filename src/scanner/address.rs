@@ -153,7 +153,7 @@ fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> Option<HostHit> {
 /// Scan an explicit list of addresses in parallel and return the ones that are
 /// available, sorted ascending.
 ///
-/// This is the entry point used when the caller has already materialised and
+/// This is the entry point used when the caller has already materialized and
 /// filtered the address list (for example after applying `--exclude`), rather
 /// than enumerating a whole subnet or range. Each probe is retried up to
 /// `retries` extra times on silence (see [`scan_address_with_retries`]).
