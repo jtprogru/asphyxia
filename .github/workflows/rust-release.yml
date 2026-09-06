@@ -26,6 +26,12 @@ jobs:
             rust_target: aarch64-unknown-linux-gnu
           - os: macos-latest
             rust_target: aarch64-apple-darwin
+          # GitHub no longer offers Intel macOS runners, so this one is cross-compiled
+          # from the arm64 runner. Nothing here needs a host toolchain beyond the added
+          # target: the crate has no build script and the macOS SDK ships a universal
+          # libpcap stub, so the `-lpcap` the pcap crate emits resolves for x86_64 too.
+          - os: macos-latest
+            rust_target: x86_64-apple-darwin
 
     steps:
       - name: Checkout repository
@@ -221,6 +227,7 @@ jobs:
           url() { echo "https://github.com/jtprogru/asphyxia/releases/download/${TAG}/$1"; }
 
           MAC_ARM="asphyxia-aarch64-apple-darwin.zip"
+          MAC_X86="asphyxia-x86_64-apple-darwin.zip"
           LINUX_X86="asphyxia-x86_64-unknown-linux-gnu.zip"
           LINUX_ARM="asphyxia-aarch64-unknown-linux-gnu.zip"
 
@@ -232,6 +239,10 @@ jobs:
             version "${VERSION}"
 
             on_macos do
+              on_intel do
+                url "$(url "$MAC_X86")"
+                sha256 "$(sha "$MAC_X86")"
+              end
               on_arm do
                 url "$(url "$MAC_ARM")"
                 sha256 "$(sha "$MAC_ARM")"
