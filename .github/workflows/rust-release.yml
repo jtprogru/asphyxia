@@ -100,6 +100,11 @@ jobs:
       - name: Verify the binary is static
         run: |
           bin="target/${{ matrix.rust_target }}/release/asphyxia"
+          file "$bin"
+          # A static musl binary pulls in nothing at runtime, so it carries no NEEDED
+          # entries. The shape differs per architecture: aarch64 has no dynamic section
+          # at all, while x86_64 is a static-pie and keeps one for self-relocation, so
+          # NEEDED is what to check rather than the presence of the section.
           if readelf -d "$bin" | grep -q NEEDED; then
             echo "::error::$bin is dynamically linked, expected a static musl build"
             readelf -d "$bin"
