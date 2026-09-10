@@ -34,6 +34,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Configuration file** — set defaults (timeout, concurrency, retries, output format, bind interface) in `~/.asphyxia.toml`; command-line flags override it.
 - **Resumable scans** — checkpoint a long port scan with `--resume <file>` and pick it up where it stopped after a Ctrl-C, crash, or dropped link.
 - **SYN/stealth scan** — half-open SYN scanning with `--syn` (IPv4, needs privileges): SYNs are sent over a raw socket and replies captured with libpcap/BPF, so it works the same on macOS and Linux, with automatic fallback to the connect scan.
+- **ACK scan** — `--scan ack` maps the firewall instead of the services: it reports which ports a filtering device lets through (`unfiltered`) and which it swallows (`filtered`), over the same raw-socket/pcap path and the same automatic fallback.
 - **Interface binding** — pin every probe to a specific network interface with `-e/--interface` (like `ssh -B` or `nmap -e`), so a host reachable only through a VPN, tunnel, or a more specific route is scanned over the right link instead of the default route.
 
 > Note: IPv6 subnet and range scans are capped at 65 536 addresses (e.g. a `/112`), since larger IPv6 spaces are impractical to walk exhaustively.
@@ -123,6 +124,9 @@ asphyxia ps -t example.com -s 53,123,161 --udp
 # SYN/stealth scan via raw sockets (needs root/CAP_NET_RAW)
 sudo asphyxia ps -t example.com --top-ports 1000 --syn
 
+# ACK scan: which ports the firewall lets through (unfiltered) or blocks (filtered)
+sudo asphyxia ps -t example.com --top-ports 100 --scan ack
+
 # Grab banners and identify services on open ports
 asphyxia ps -t example.com -s 22,80,443 --sV
 
@@ -159,6 +163,7 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `-a, --all-ports` | Scan the entire port range (1-65535) |
 | `-u, --udp` | Scan UDP ports instead of TCP (results are `open` or `open\|filtered`) |
 | `--syn` | SYN/stealth scan via raw sockets (IPv4; needs root/`CAP_NET_RAW`, else falls back to connect) |
+| `--scan <MODE>` | Probe type: `connect` (default), `syn`, or `ack` (firewall state; raw modes need root) |
 | `--sV` (`--banner`) | Grab banners and identify the service on each open TCP port |
 | `--resume <PATH>` | Checkpoint progress to a file and resume from it if it already exists |
 | `--top-ports <N>` | Scan the `N` most common TCP ports (frequency-ordered, up to 1000) |
@@ -188,7 +193,7 @@ A port that answers with an ICMP port-unreachable is **closed** and is simply no
 ```bash
 asphyxia ps -t 192.168.1.1 -s 53,123,161 --udp
 asphyxia ps -t 192.168.1.1 -s 53,123,161 --udp -o jsonl
-# {"ip":"192.168.1.1","port":53,"proto":"udp","latency_ms":4,"status":"open"}
+# {"ip":"192.168.1.1","port":53,"proto":"udp","scan":"connect","latency_ms":4,"status":"open"}
 ```
 
 #### Service & version detection (`--sV`)
@@ -200,7 +205,7 @@ This is a lightweight identifier, not a full nmap-service-probes database — fo
 ```bash
 asphyxia ps -t example.com -s 22,80,443 --sV
 asphyxia ps -t example.com --top-ports 100 --sV -o jsonl
-# {"ip":"93.184.216.34","port":22,"proto":"tcp","latency_ms":7,"status":"open","service":"ssh","banner":"SSH-2.0-OpenSSH_9.6"}
+# {"ip":"93.184.216.34","port":22,"proto":"tcp","scan":"connect","latency_ms":7,"status":"open","service":"ssh","banner":"SSH-2.0-OpenSSH_9.6"}
 ```
 
 #### SYN / stealth scan (`--syn`)
@@ -220,6 +225,32 @@ Details and limitations:
 - **High-latency links** — a SYN probe waits up to `--timeout` for its reply. On slow paths (distant hosts, VPNs) a reply can arrive just after the deadline and the probe then falls back to a connect check (still correct, just not stealthy). Raise `--timeout` on such links so SYN replies land in time.
 - **Diagnostics** — set `ASPHYXIA_SYN_DEBUG=1` to print capture diagnostics to stderr (the chosen interface and datalink, each captured reply, and each probe's outcome), useful when a scan unexpectedly falls back.
 - `--syn` and `--udp` are mutually exclusive.
+
+#### ACK scan (`--scan ack`)
+
+`--scan ack` sends a lone TCP ACK instead of a SYN. Any reachable host answers a stray ACK with an RST whether the port is open or closed, so the reply says nothing about the service behind it — only that the probe got through. That makes it a map of the **firewall**, not of the services:
+
+- **`unfiltered`** — an RST came back, so nothing dropped the probe on the way in. The port may be open or closed; an ACK probe cannot tell, and Asphyxia does not guess.
+- **`filtered`** — silence within `--timeout`. A stateful firewall or ACL swallowed the probe.
+
+Use it to see which ports a filtering device passes, then re-scan those with `--syn` or a connect scan to learn what is actually listening.
+
+```bash
+sudo asphyxia ps -t gateway.example.com --top-ports 100 --scan ack
+sudo asphyxia ps -t gateway.example.com --top-ports 100 --scan ack -o jsonl
+# {"ip":"192.0.2.1","port":22,"proto":"tcp","scan":"ack","latency_ms":6,"status":"unfiltered"}
+# {"ip":"192.0.2.1","port":23,"proto":"tcp","scan":"ack","latency_ms":2000,"status":"filtered"}
+```
+
+Details and limitations:
+
+- **Every probed port is reported**, unlike the other modes, which list only what they found: with an ACK scan silence *is* the finding, so `filtered` ports are results too. Keep the port set narrow (`--top-ports`, `-s`) — a filtered port waits out the full `--timeout`.
+- **Never `open` or `closed`.** Those states are outside what an ACK probe can observe, so they never appear in an ACK result, in any output format.
+- **Same requirements and fallback as `--syn`** — root/`CAP_NET_RAW`, libpcap, IPv4 only. When any of those is missing, Asphyxia says so on stderr and falls back to a connect scan. That fallback answers a *different* question (open/closed), which is why every record carries a `scan` field naming the probe that produced it: `ack`, `syn` or `connect`.
+- **`--retries` re-probes silence only** — a dropped probe and a filtered one look identical, so on a lossy link `--retries 1` buys back some certainty. `--rate` and `-T` profiles apply exactly as they do to the other modes.
+- **`--sV` and `--nmap` do nothing here** and say so: both need an open port, which an ACK scan never establishes.
+- **Checkpoints are not interchangeable** — a `--resume` state from an ACK scan is never resumed as a connect/SYN scan of the same grid, or the other way round.
+- `--scan ack` is mutually exclusive with `--udp` and `--syn` (`--syn` is the same thing as `--scan syn`).
 
 #### Selecting the outgoing interface (`-e`/`--interface`)
 
@@ -300,17 +331,17 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 
 ### Machine-readable output (`--output`)
 
-By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto`, `latency_ms`, and `status`.
+By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto`, `scan` (the probe that produced it: `connect`, `syn` or `ack`), `latency_ms`, and `status`.
 
 ```bash
 # One JSON object per open port, on its own line (JSON Lines)
 asphyxia ps -t example.com -s 22,80,443 -o jsonl
-# {"ip":"93.184.216.34","port":80,"proto":"tcp","latency_ms":12,"status":"open"}
+# {"ip":"93.184.216.34","port":80,"proto":"tcp","scan":"connect","latency_ms":12,"status":"open"}
 
 # A single JSON array of available hosts
 asphyxia as -s 192.168.1.0/24 -o json
 
-# CSV with a header row (ip,port,proto,status,latency_ms)
+# CSV with a header row (ip,port,proto,scan,status,latency_ms)
 asphyxia ps -t example.com --top-ports 100 -o csv
 
 # Greppable, tab-separated columns for grep/awk/cut
@@ -421,7 +452,7 @@ asphyxia ps -t example.com -s 22,80,443 --sV
 # 93.184.216.34:22 ssh [SSH-2.0-OpenSSH_9.6]
 
 asphyxia ps -t example.com --top-ports 100 --sV -o jsonl
-# {"ip":"...","port":22,"proto":"tcp","status":"open","service":"ssh","banner":"SSH-2.0-OpenSSH_9.6"}
+# {"ip":"...","port":22,"proto":"tcp","scan":"connect","status":"open","service":"ssh","banner":"SSH-2.0-OpenSSH_9.6"}
 ```
 
 ### UDP scanning (DNS, NTP, SNMP)
@@ -476,6 +507,9 @@ asphyxia ps -i targets.txt --all-ports --resume scan.state
 ```bash
 # Half-open SYN scan (needs root/CAP_NET_RAW; falls back to connect without them)
 sudo asphyxia ps -t scanme.nmap.org --top-ports 1000 --syn
+
+# ACK scan: what the firewall passes (unfiltered) and what it drops (filtered)
+sudo asphyxia ps -t scanme.nmap.org --top-ports 100 --scan ack
 
 # Find open ports fast, then hand them to nmap for a deep dive
 asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
