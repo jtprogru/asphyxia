@@ -25,6 +25,10 @@ pub struct StateFinding {
     pub port: u16,
     pub latency_ms: u128,
     pub status: String,
+    /// The probe that produced this result (`"connect"`, `"syn"`, `"ack"`).
+    /// Older state files predate the field and are read back as `"connect"`.
+    #[serde(default = "default_scan")]
+    pub scan: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub service: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -34,7 +38,10 @@ pub struct StateFinding {
 /// The persisted state of an in-progress or completed scan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanState {
-    /// Transport of the scan (`"tcp"` or `"udp"`) — a resume must match.
+    /// Transport and probe type of the scan (`"tcp"`, `"udp"`, `"tcp-ack"`) —
+    /// a resume must match. The ACK scan gets its own key because it answers a
+    /// different question, so its checkpoint must never be resumed as a
+    /// connect scan of the same grid, or vice versa.
     pub proto: String,
     /// Resolved target IPs, in order; the order is part of the job identity.
     pub targets: Vec<String>,
@@ -114,6 +121,11 @@ impl ScanState {
     }
 }
 
+/// The probe assumed for findings written before the `scan` field existed.
+fn default_scan() -> String {
+    "connect".to_string()
+}
+
 /// The sibling temp path used for atomic writes.
 fn tmp_path(path: &Path) -> std::path::PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
@@ -139,6 +151,7 @@ mod tests {
                 port: 80,
                 latency_ms: 5,
                 status: "open".into(),
+                scan: "connect".into(),
                 service: Some("http".into()),
                 banner: None,
             }),
@@ -163,6 +176,44 @@ mod tests {
         assert!(!s.is_pending(1));
         assert!(s.is_pending(2));
         assert!(s.is_pending(3));
+    }
+
+    #[test]
+    fn an_ack_checkpoint_is_not_resumable_as_a_connect_scan() {
+        // Same targets and ports, different question: the states must not mix.
+        let ack = ScanState::new("tcp-ack", vec!["10.0.0.1".into()], vec![80], 1);
+        let targets = vec!["10.0.0.1".to_string()];
+        assert!(ack.is_compatible("tcp-ack", &targets, &[80], 1));
+        assert!(!ack.is_compatible("tcp", &targets, &[80], 1));
+    }
+
+    #[test]
+    fn ack_findings_round_trip_their_state_and_mode() {
+        let mut s = ScanState::new("tcp-ack", vec!["10.0.0.1".into()], vec![80], 1);
+        s.complete(
+            0,
+            Some(StateFinding {
+                host: 0,
+                port: 80,
+                latency_ms: 3,
+                status: "unfiltered".into(),
+                scan: "ack".into(),
+                service: None,
+                banner: None,
+            }),
+        );
+        let back: ScanState = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.findings[0].status, "unfiltered");
+        assert_eq!(back.findings[0].scan, "ack");
+    }
+
+    #[test]
+    fn a_state_file_without_the_scan_field_reads_back_as_connect() {
+        // Checkpoints written before --scan existed must still load.
+        let json = r#"{"proto":"tcp","targets":["10.0.0.1"],"ports":[80],"job_count":1,
+            "done":[true],"findings":[{"host":0,"port":80,"latency_ms":2,"status":"open"}]}"#;
+        let state: ScanState = serde_json::from_str(json).expect("legacy state should load");
+        assert_eq!(state.findings[0].scan, "connect");
     }
 
     #[test]
@@ -201,6 +252,7 @@ mod tests {
                 port: 22,
                 latency_ms: 1,
                 status: "open".into(),
+                scan: "connect".into(),
                 service: None,
                 banner: None,
             }),

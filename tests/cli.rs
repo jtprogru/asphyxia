@@ -328,7 +328,7 @@ fn port_scan_csv_emits_header_even_with_no_open_ports() {
         .args(["ps", "-t", "127.0.0.1", "-s", "1", "-o", "csv"])
         .assert()
         .success()
-        .stdout(predicate::eq("ip,port,proto,status,latency_ms\n"));
+        .stdout(predicate::eq("ip,port,proto,scan,status,latency_ms\n"));
 }
 
 #[test]
@@ -412,7 +412,7 @@ fn config_supplies_defaults_that_flags_override() {
         .args(["ps", "-t", "127.0.0.1", "-s", "1", "-o", "csv"])
         .assert()
         .success()
-        .stdout(predicate::eq("ip,port,proto,status,latency_ms\n"));
+        .stdout(predicate::eq("ip,port,proto,scan,status,latency_ms\n"));
 
     let _ = std::fs::remove_file(&path);
 }
@@ -479,6 +479,79 @@ fn syn_scan_runs_or_falls_back_cleanly() {
         .assert()
         .success()
         .stdout(predicate::eq("[]\n"));
+}
+
+#[test]
+fn ack_scan_reports_firewall_state_and_never_open_or_closed() {
+    // Port 1 on loopback. With privileges the ACK probe draws an RST and the
+    // port is reported unfiltered; without them the scan says so and falls back
+    // to a connect probe, which finds nothing on a closed port. Either way no
+    // result may claim "open" — an ACK probe cannot know that.
+    let assertion = asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--scan",
+            "ack",
+            "--timeout",
+            "300",
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).into_owned();
+
+    for line in stdout.lines() {
+        assert!(
+            line.contains("\"scan\":\"ack\""),
+            "an ACK result must record the probe that produced it: {line}"
+        );
+        assert!(
+            line.contains("\"status\":\"unfiltered\"") || line.contains("\"status\":\"filtered\""),
+            "an ACK result must be unfiltered or filtered: {line}"
+        );
+    }
+    assert!(
+        !stdout.contains("\"status\":\"open\"") && !stdout.contains("\"status\":\"closed\""),
+        "an ACK scan must not report open/closed: {stdout}"
+    );
+}
+
+#[test]
+fn ack_scan_falls_back_visibly_for_an_ipv6_target() {
+    // The raw path is IPv4-only (and needs privileges). Whichever check trips
+    // first, the operator is told the scan changed question before the results
+    // arrive, rather than reading connect results as ACK results.
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "::1",
+            "-s",
+            "1",
+            "--scan",
+            "ack",
+            "--timeout",
+            "300",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("falling back to connect scan"));
+}
+
+#[test]
+fn ack_scan_rejects_a_udp_pairing() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "--scan", "ack", "--udp"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 #[test]
@@ -694,7 +767,7 @@ fn output_file_writes_machine_output_and_keeps_stdout_clean() {
         .stdout(predicate::eq(""));
 
     let contents = std::fs::read_to_string(&path).expect("output file should exist");
-    assert!(contents.starts_with("ip,port,proto,status,latency_ms\n"));
+    assert!(contents.starts_with("ip,port,proto,scan,status,latency_ms\n"));
     let _ = std::fs::remove_file(&path);
 }
 

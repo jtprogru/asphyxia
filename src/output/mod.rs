@@ -27,7 +27,7 @@ pub enum OutputFormat {
     Json,
     /// JSON Lines: one [`ScanRecord`] object per line.
     Jsonl,
-    /// CSV with a header row (`ip,port,proto,status,latency_ms`).
+    /// CSV with a header row (`ip,port,proto,scan,status,latency_ms`).
     Csv,
     /// Greppable plain text: one tab-separated line per result.
     Grep,
@@ -55,9 +55,14 @@ pub struct ScanRecord {
     pub port: Option<u16>,
     /// Transport protocol of the probe.
     pub proto: &'static str,
+    /// The probe that produced this record: `"connect"`, `"syn"` or `"ack"`.
+    /// It is per record, not per scan, because a raw mode can fall back to a
+    /// connect probe for an individual target or port.
+    pub scan: &'static str,
     /// Wall-clock latency of the probe, in milliseconds.
     pub latency_ms: u128,
-    /// `"open"` for an open port, `"up"` for an available host.
+    /// The observed state: `"open"` or `"open|filtered"` for a port scan,
+    /// `"unfiltered"`/`"filtered"` for an ACK scan, `"up"` for an available host.
     pub status: &'static str,
     /// Detected service (from `--sV`), omitted when unknown or not requested.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,12 +100,12 @@ pub fn render(records: &[ScanRecord], format: OutputFormat) -> String {
 /// CSV with a fixed header. The `port` column is empty for host-discovery
 /// records, which have no port.
 fn render_csv(records: &[ScanRecord]) -> String {
-    let mut out = String::from("ip,port,proto,status,latency_ms\n");
+    let mut out = String::from("ip,port,proto,scan,status,latency_ms\n");
     for r in records {
         let port = r.port.map(|p| p.to_string()).unwrap_or_default();
         out.push_str(&format!(
-            "{},{},{},{},{}\n",
-            r.ip, port, r.proto, r.status, r.latency_ms
+            "{},{},{},{},{},{}\n",
+            r.ip, port, r.proto, r.scan, r.status, r.latency_ms
         ));
     }
     out
@@ -117,8 +122,8 @@ fn render_grep(records: &[ScanRecord]) -> String {
             .map(|p| p.to_string())
             .unwrap_or_else(|| "-".to_string());
         out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\n",
-            r.ip, port, r.proto, r.status, r.latency_ms
+            "{}\t{}\t{}\t{}\t{}\t{}\n",
+            r.ip, port, r.proto, r.scan, r.status, r.latency_ms
         ));
     }
     out
@@ -160,6 +165,7 @@ mod tests {
                 ip: "127.0.0.1".to_string(),
                 port: Some(80),
                 proto: "tcp",
+                scan: "connect",
                 latency_ms: 3,
                 status: "open",
                 service: None,
@@ -169,6 +175,7 @@ mod tests {
                 ip: "10.0.0.5".to_string(),
                 port: None,
                 proto: "tcp",
+                scan: "connect",
                 latency_ms: 12,
                 status: "up",
                 service: None,
@@ -181,17 +188,20 @@ mod tests {
     fn csv_has_header_and_blank_port_for_host_records() {
         let out = render(&sample(), OutputFormat::Csv);
         let mut lines = out.lines();
-        assert_eq!(lines.next().unwrap(), "ip,port,proto,status,latency_ms");
-        assert_eq!(lines.next().unwrap(), "127.0.0.1,80,tcp,open,3");
+        assert_eq!(
+            lines.next().unwrap(),
+            "ip,port,proto,scan,status,latency_ms"
+        );
+        assert_eq!(lines.next().unwrap(), "127.0.0.1,80,tcp,connect,open,3");
         // Host-discovery record has an empty port column.
-        assert_eq!(lines.next().unwrap(), "10.0.0.5,,tcp,up,12");
+        assert_eq!(lines.next().unwrap(), "10.0.0.5,,tcp,connect,up,12");
     }
 
     #[test]
     fn empty_csv_still_has_header() {
         assert_eq!(
             render(&[], OutputFormat::Csv),
-            "ip,port,proto,status,latency_ms\n"
+            "ip,port,proto,scan,status,latency_ms\n"
         );
     }
 
@@ -199,8 +209,11 @@ mod tests {
     fn grep_is_tab_separated_with_dash_for_missing_port() {
         let out = render(&sample(), OutputFormat::Grep);
         let mut lines = out.lines();
-        assert_eq!(lines.next().unwrap(), "127.0.0.1\t80\ttcp\topen\t3");
-        assert_eq!(lines.next().unwrap(), "10.0.0.5\t-\ttcp\tup\t12");
+        assert_eq!(
+            lines.next().unwrap(),
+            "127.0.0.1\t80\ttcp\tconnect\topen\t3"
+        );
+        assert_eq!(lines.next().unwrap(), "10.0.0.5\t-\ttcp\tconnect\tup\t12");
     }
 
     #[test]
@@ -221,8 +234,47 @@ mod tests {
         let path = dir.join(format!("asphyxia-emit-test-{}.csv", std::process::id()));
         emit(&sample(), OutputFormat::Csv, Some(&path)).expect("write should succeed");
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.starts_with("ip,port,proto,status,latency_ms\n"));
+        assert!(contents.starts_with("ip,port,proto,scan,status,latency_ms\n"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ack_records_carry_their_mode_and_firewall_state() {
+        // An ACK scan reports unfiltered/filtered, never open/closed, and the
+        // scan column says which probe produced the state.
+        let records = vec![
+            ScanRecord {
+                ip: "192.0.2.10".to_string(),
+                port: Some(22),
+                proto: "tcp",
+                scan: "ack",
+                latency_ms: 4,
+                status: "unfiltered",
+                service: None,
+                banner: None,
+            },
+            ScanRecord {
+                ip: "192.0.2.10".to_string(),
+                port: Some(23),
+                proto: "tcp",
+                scan: "ack",
+                latency_ms: 2000,
+                status: "filtered",
+                service: None,
+                banner: None,
+            },
+        ];
+        let csv = render(&records, OutputFormat::Csv);
+        assert!(csv.contains("192.0.2.10,22,tcp,ack,unfiltered,4\n"));
+        assert!(csv.contains("192.0.2.10,23,tcp,ack,filtered,2000\n"));
+
+        let json = render(&records, OutputFormat::Json);
+        assert!(json.contains("\"scan\":\"ack\""));
+        assert!(json.contains("\"status\":\"unfiltered\""));
+        assert!(!json.contains("\"status\":\"open\""));
+
+        let grep = render(&records, OutputFormat::Grep);
+        assert!(grep.contains("192.0.2.10\t22\ttcp\tack\tunfiltered\t4\n"));
     }
 
     #[test]
