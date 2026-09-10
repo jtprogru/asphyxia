@@ -184,7 +184,8 @@ fn scan_one(
             }
             Some(syn::SynOutcome::Closed) => return None,
             // Filtered, or raw socket unusable: fall back to a connect probe.
-            Some(syn::SynOutcome::Filtered) | None => {}
+            // An ACK-only outcome cannot arise from a SYN probe.
+            Some(syn::SynOutcome::Filtered | syn::SynOutcome::Unfiltered) | None => {}
         }
     }
 
