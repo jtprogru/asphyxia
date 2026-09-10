@@ -1,4 +1,5 @@
-//! SYN / stealth scanning (`--syn`, `-sS`).
+//! Raw-packet TCP probing: SYN / stealth scanning (`--syn`) and ACK scanning
+//! (`--scan ack`).
 //!
 //! A SYN scan sends a lone TCP SYN and never completes the handshake: a SYN/ACK
 //! reply means the port is open (we answer with an RST instead of an ACK), an RST
@@ -6,22 +7,34 @@
 //! full connect scan, but forging raw TCP/IP packets needs elevated privileges
 //! (root / `CAP_NET_RAW`).
 //!
+//! An ACK scan sends a lone ACK instead. Any host that receives a stray ACK
+//! answers with an RST whether the port is open or closed, so the reply says
+//! nothing about the service behind it — only that the probe got through, i.e.
+//! the port is `unfiltered`. Silence means a filtering device swallowed the
+//! probe (`filtered`). It maps the firewall, not the services.
+//!
+//! Both share one packet path: [`ProbeMode`] picks the flag profile that goes
+//! out and the rules that read the reply, so another mode is another profile
+//! rather than a second scanner.
+//!
 //! This module is split so the risky, privilege-bound network I/O is separate
 //! from the pure, exhaustively-tested packet machinery:
 //!
-//! * [`build_ipv4_syn`] / [`build_tcp_syn`] assemble the bytes on the wire,
-//! * [`parse_ipv4_tcp`] and [`classify_flags`] interpret a reply,
+//! * [`build_ipv4_probe`] / [`build_tcp_probe`] assemble the bytes on the wire,
+//! * [`parse_ipv4_tcp`], [`classify_flags`] and [`classify_reply`] interpret a
+//!   reply,
 //! * [`raw_socket_available`] reports whether a raw socket can be opened, so the
 //!   caller can fall back to a connect scan with a clear message when it cannot.
 //!
-//! The SYN is *sent* over a raw socket, but replies are *received* with
+//! The probe is *sent* over a raw socket, but replies are *received* with
 //! libpcap/BPF via a single shared [`SynReceiver`] rather than `recv()` on the
 //! raw socket. That receive path matters: on macOS/BSD the kernel never hands
 //! inbound TCP to a raw socket, so a `recv()`-based reader reads nothing and
 //! every port looks filtered. A pcap capture works uniformly on Linux and macOS
 //! (this is what nmap does too). See issues #38 / #39.
 //!
-//! IPv4 only: IPv6 SYN scanning is not implemented and callers fall back.
+//! IPv4 only: raw-packet probing of IPv6 targets is not implemented and callers
+//! fall back.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -44,27 +57,88 @@ const IPV4_HEADER_LEN: usize = 20;
 /// IANA protocol number for TCP.
 const IPPROTO_TCP: u8 = 6;
 
-/// How a SYN probe's reply is interpreted.
+/// How a raw probe's reply is interpreted. Which variants a scan can produce
+/// depends on its [`ProbeMode`]: a SYN probe decides open/closed/filtered, an
+/// ACK probe decides unfiltered/filtered and never claims open or closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SynOutcome {
-    /// SYN/ACK — the port is open.
+pub enum ProbeOutcome {
+    /// SYN/ACK — the port is open. SYN mode only.
     Open,
-    /// RST — the port is closed.
+    /// RST to a SYN — the port is closed. SYN mode only.
     Closed,
+    /// RST to an ACK — the probe reached the port, so nothing filtered it. It
+    /// says nothing about open/closed. ACK mode only.
+    Unfiltered,
     /// Anything else (or no reply) — filtered/indeterminate.
     Filtered,
 }
 
-/// Classify a TCP reply from its flag byte: RST is closed, SYN+ACK is open,
-/// everything else is filtered.
-pub fn classify_flags(flags: u8) -> SynOutcome {
-    if flags & TCP_RST != 0 {
-        SynOutcome::Closed
-    } else if flags & TCP_SYN != 0 && flags & TCP_ACK != 0 {
-        SynOutcome::Open
-    } else {
-        SynOutcome::Filtered
+/// The former name of [`ProbeOutcome`], kept so existing callers keep building.
+pub type SynOutcome = ProbeOutcome;
+
+/// Which flag profile a raw probe carries, and hence how its reply is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeMode {
+    /// A lone SYN: SYN/ACK means open, RST means closed, silence is filtered.
+    Syn,
+    /// A lone ACK: an RST proves the probe reached the port (`unfiltered`),
+    /// silence means something dropped it (`filtered`). It cannot tell open
+    /// from closed — both answer a stray ACK with an RST.
+    Ack,
+}
+
+impl ProbeMode {
+    /// The TCP control flags a probe in this mode sets.
+    pub fn flags(self) -> u8 {
+        match self {
+            ProbeMode::Syn => TCP_SYN,
+            ProbeMode::Ack => TCP_ACK,
+        }
     }
+
+    /// Stable name for this mode in structured output and messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            ProbeMode::Syn => "syn",
+            ProbeMode::Ack => "ack",
+        }
+    }
+}
+
+/// Classify the reply to a SYN probe from its flag byte: RST is closed, SYN+ACK
+/// is open, everything else is filtered.
+pub fn classify_flags(flags: u8) -> ProbeOutcome {
+    if flags & TCP_RST != 0 {
+        ProbeOutcome::Closed
+    } else if flags & TCP_SYN != 0 && flags & TCP_ACK != 0 {
+        ProbeOutcome::Open
+    } else {
+        ProbeOutcome::Filtered
+    }
+}
+
+/// Classify a reply's flag byte the way `mode` requires.
+///
+/// The same RST means different things per mode: to a SYN it says the port is
+/// closed, to an ACK it says only that the probe was not filtered on the way in.
+pub fn classify_reply(mode: ProbeMode, flags: u8) -> ProbeOutcome {
+    match mode {
+        ProbeMode::Syn => classify_flags(flags),
+        ProbeMode::Ack => {
+            if flags & TCP_RST != 0 {
+                ProbeOutcome::Unfiltered
+            } else {
+                ProbeOutcome::Filtered
+            }
+        }
+    }
+}
+
+/// Whether a captured segment can answer a probe at all: only an RST or a
+/// SYN+ACK does. Anything else (a bare SYN from unrelated traffic, our own
+/// outbound packets) is noise the receiver must not record.
+fn is_probe_reply(flags: u8) -> bool {
+    flags & TCP_RST != 0 || (flags & TCP_SYN != 0 && flags & TCP_ACK != 0)
 }
 
 /// One's-complement 16-bit checksum over `data` (RFC 1071), used for both the
@@ -84,22 +158,28 @@ fn checksum(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-/// Build a bare TCP SYN segment (20 bytes, no options) with its checksum filled
-/// in over the IPv4 pseudo-header.
-pub fn build_tcp_syn(
+/// Build a bare TCP segment (20 bytes, no options) carrying `flags`, with its
+/// checksum filled in over the IPv4 pseudo-header.
+///
+/// The flag byte is what separates one raw scan mode from another — a lone SYN
+/// for a stealth scan, a lone ACK for a firewall-state scan — so every mode goes
+/// through this one builder.
+pub fn build_tcp_probe(
     src: Ipv4Addr,
     dst: Ipv4Addr,
     src_port: u16,
     dst_port: u16,
     seq: u32,
+    ack: u32,
+    flags: u8,
 ) -> Vec<u8> {
     let mut seg = vec![0u8; TCP_HEADER_LEN];
     seg[0..2].copy_from_slice(&src_port.to_be_bytes());
     seg[2..4].copy_from_slice(&dst_port.to_be_bytes());
     seg[4..8].copy_from_slice(&seq.to_be_bytes());
-    // ack number stays 0 (bytes 8..12).
+    seg[8..12].copy_from_slice(&ack.to_be_bytes());
     seg[12] = 0x50; // data offset = 5 (20 bytes) in the high nibble.
-    seg[13] = TCP_SYN;
+    seg[13] = flags;
     seg[14..16].copy_from_slice(&1024u16.to_be_bytes()); // window
     // checksum (16..18) left zero for the computation.
     // urgent pointer (18..20) stays 0.
@@ -118,16 +198,30 @@ pub fn build_tcp_syn(
     seg
 }
 
-/// Build a complete IPv4 packet carrying a TCP SYN, including a valid IPv4
-/// header checksum.
-pub fn build_ipv4_syn(
+/// Build a bare TCP SYN segment — [`build_tcp_probe`] with the SYN profile and
+/// no acknowledgement number.
+pub fn build_tcp_syn(
     src: Ipv4Addr,
     dst: Ipv4Addr,
     src_port: u16,
     dst_port: u16,
     seq: u32,
 ) -> Vec<u8> {
-    let tcp = build_tcp_syn(src, dst, src_port, dst_port, seq);
+    build_tcp_probe(src, dst, src_port, dst_port, seq, 0, TCP_SYN)
+}
+
+/// Build a complete IPv4 packet carrying a TCP segment with `flags`, including a
+/// valid IPv4 header checksum.
+pub fn build_ipv4_probe(
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+) -> Vec<u8> {
+    let tcp = build_tcp_probe(src, dst, src_port, dst_port, seq, ack, flags);
     let total_len = (IPV4_HEADER_LEN + tcp.len()) as u16;
 
     let mut ip = vec![0u8; IPV4_HEADER_LEN];
@@ -147,6 +241,18 @@ pub fn build_ipv4_syn(
 
     ip.extend_from_slice(&tcp);
     ip
+}
+
+/// Build a complete IPv4 packet carrying a TCP SYN — [`build_ipv4_probe`] with
+/// the SYN profile.
+pub fn build_ipv4_syn(
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+) -> Vec<u8> {
+    build_ipv4_probe(src, dst, src_port, dst_port, seq, 0, TCP_SYN)
 }
 
 /// Parse an IPv4 packet that carries TCP, returning `(src_ip, dst_ip, src_port,
@@ -225,21 +331,44 @@ fn src_port_for(dst_port: u16) -> u16 {
     SRC_PORT_BASE.wrapping_add(dst_port)
 }
 
-/// Perform a single SYN probe against `dst:dst_port`: forge and send a SYN over
-/// a raw socket, then wait for the shared [`SynReceiver`] to observe the reply.
-/// A SYN/ACK is [`SynOutcome::Open`], an RST is [`SynOutcome::Closed`], and no
-/// reply within `timeout` is [`SynOutcome::Filtered`].
+/// Sequence number every forged probe carries. Fixed rather than random: no
+/// connection is ever established, and replies are correlated by address and
+/// port, so the value only has to look like a real one.
+const PROBE_SEQ: u32 = 0x1234_5678;
+
+/// Acknowledgement number an ACK probe carries.
+const PROBE_ACK: u32 = 0x2f1a_0b3c;
+
+/// Perform a single SYN probe against `dst:dst_port` — [`probe_port`] in
+/// [`ProbeMode::Syn`].
+pub fn syn_scan_port(dst: Ipv4Addr, dst_port: u16, timeout: Duration) -> Option<ProbeOutcome> {
+    probe_port(ProbeMode::Syn, dst, dst_port, timeout)
+}
+
+/// Perform a single raw probe against `dst:dst_port` in `mode`: forge and send
+/// the segment over a raw socket, then wait for the shared [`SynReceiver`] to
+/// observe the reply and read it by that mode's rules.
 ///
-/// Returns `None` when the SYN scan cannot run — the receiver was never
+/// In [`ProbeMode::Syn`] a SYN/ACK is [`ProbeOutcome::Open`], an RST is
+/// [`ProbeOutcome::Closed`]. In [`ProbeMode::Ack`] an RST is
+/// [`ProbeOutcome::Unfiltered`]. In either mode no reply within `timeout` is
+/// [`ProbeOutcome::Filtered`].
+///
+/// Returns `None` when the raw scan cannot run — the receiver was never
 /// installed (no [`init_receiver`], or it failed), a raw socket cannot be
 /// opened, or the send errored — signaling the caller to fall back to a
 /// connect probe. Replies are read by the receiver's pcap capture, never by a
 /// `recv()` here, so this works on macOS as well as Linux.
-pub fn syn_scan_port(dst: Ipv4Addr, dst_port: u16, timeout: Duration) -> Option<SynOutcome> {
+pub fn probe_port(
+    mode: ProbeMode,
+    dst: Ipv4Addr,
+    dst_port: u16,
+    timeout: Duration,
+) -> Option<ProbeOutcome> {
     use socket2::{Domain, Protocol, Socket, Type};
 
     // Without a running capture there is nothing to read replies, so let the
-    // caller fall back rather than send SYNs into a void.
+    // caller fall back rather than send probes into a void.
     let receiver = receiver()?;
 
     // Respect the global rate limit (no-op when none is installed).
@@ -253,7 +382,17 @@ pub fn syn_scan_port(dst: Ipv4Addr, dst_port: u16, timeout: Duration) -> Option<
     // TCP through a bare IPPROTO_TCP raw socket (EPROTOTYPE), so we build the IP
     // header ourselves over an IPPROTO_RAW socket, which implies IP_HDRINCL.
     #[allow(unused_mut)]
-    let mut packet = build_ipv4_syn(src, dst, src_port, dst_port, 0x1234_5678);
+    let mut packet = build_ipv4_probe(
+        src,
+        dst,
+        src_port,
+        dst_port,
+        PROBE_SEQ,
+        // A stray ACK draws an RST whatever it acknowledges, but a plausible
+        // non-zero value looks less synthetic on the wire than a bare zero.
+        if mode == ProbeMode::Ack { PROBE_ACK } else { 0 },
+        mode.flags(),
+    );
     #[cfg(target_os = "macos")]
     {
         // Darwin's IP_HDRINCL path reads ip_len and ip_off in host byte order
@@ -274,7 +413,8 @@ pub fn syn_scan_port(dst: Ipv4Addr, dst_port: u16, timeout: Duration) -> Option<
     match socket.send_to(&packet, &destination) {
         Ok(n) => {
             if dbg {
-                eprintln!("[syn] sent {n}B SYN {src}:{src_port} -> {dst}:{dst_port}");
+                let label = mode.label();
+                eprintln!("[syn] sent {n}B {label} probe {src}:{src_port} -> {dst}:{dst_port}");
             }
         }
         Err(e) => {
@@ -286,7 +426,7 @@ pub fn syn_scan_port(dst: Ipv4Addr, dst_port: u16, timeout: Duration) -> Option<
     }
 
     let started = Instant::now();
-    let outcome = receiver.wait_for(dst, dst_port, timeout);
+    let outcome = receiver.wait_for(dst, dst_port, timeout, mode);
     if dbg {
         eprintln!(
             "[syn] wait {dst}:{dst_port} = {outcome:?} after {:?}",
@@ -308,16 +448,18 @@ const SNAPLEN: i32 = 128;
 
 /// State shared between the probe threads and the background pcap reader.
 struct ReceiverShared {
-    /// Observed outcomes keyed by `(target_ip, target_port)` — i.e. the source
-    /// address of the reply. Only definitive results (open/closed) are stored.
-    outcomes: Mutex<HashMap<(Ipv4Addr, u16), SynOutcome>>,
-    /// Woken whenever a new outcome is recorded, so waiters re-check the map.
+    /// Reply flag bytes keyed by `(target_ip, target_port)` — i.e. the source
+    /// address of the reply. The raw flags are stored rather than a verdict,
+    /// because what an RST means depends on the [`ProbeMode`] that asked; only
+    /// segments that can answer a probe at all are kept (see [`is_probe_reply`]).
+    replies: Mutex<HashMap<(Ipv4Addr, u16), u8>>,
+    /// Woken whenever a new reply is recorded, so waiters re-check the map.
     signal: Condvar,
     /// Set on drop to stop the reader loop.
     stop: AtomicBool,
 }
 
-/// A single libpcap capture that reads every SYN/stealth reply for the whole
+/// A single libpcap capture that reads every raw-probe reply for the whole
 /// scan and lets per-port probes wait for their answer. One capture is far
 /// cheaper than one `recv()` per port and, on macOS, avoids exhausting the
 /// limited pool of `/dev/bpf*` devices that a capture-per-probe would.
@@ -333,7 +475,7 @@ impl SynReceiver {
     fn start(target: Ipv4Addr) -> Option<SynReceiver> {
         let src = local_ipv4_for(target)?;
         let shared = Arc::new(ReceiverShared {
-            outcomes: Mutex::new(HashMap::new()),
+            replies: Mutex::new(HashMap::new()),
             signal: Condvar::new(),
             stop: AtomicBool::new(false),
         });
@@ -366,22 +508,29 @@ impl SynReceiver {
     }
 
     /// Block until a reply for `(target, port)` is recorded or `timeout`
-    /// elapses. A missing reply is [`SynOutcome::Filtered`].
-    fn wait_for(&self, target: Ipv4Addr, port: u16, timeout: Duration) -> SynOutcome {
+    /// elapses, then read it by `mode`'s rules. A missing reply is
+    /// [`ProbeOutcome::Filtered`] in every mode.
+    fn wait_for(
+        &self,
+        target: Ipv4Addr,
+        port: u16,
+        timeout: Duration,
+        mode: ProbeMode,
+    ) -> ProbeOutcome {
         let key = (target, port);
         let deadline = Instant::now() + timeout;
         let mut map = self
             .shared
-            .outcomes
+            .replies
             .lock()
             .expect("syn receiver mutex poisoned");
         loop {
-            if let Some(&outcome) = map.get(&key) {
-                return outcome;
+            if let Some(&flags) = map.get(&key) {
+                return classify_reply(mode, flags);
             }
             let now = Instant::now();
             if now >= deadline {
-                return SynOutcome::Filtered;
+                return ProbeOutcome::Filtered;
             }
             let (guard, _timed_out) = self
                 .shared
@@ -426,8 +575,9 @@ fn receiver() -> Option<&'static SynReceiver> {
     RECEIVER.get()
 }
 
-/// Open a pcap capture on the interface bearing `src`, filtered to inbound
-/// SYN/ACK and RST segments, and report the datalink header length to strip.
+/// Open a pcap capture on the interface bearing `src`, filtered to the segments
+/// that can answer a probe (SYN/ACK and RST), and report the datalink header
+/// length to strip.
 fn open_capture(src: Ipv4Addr) -> Option<(pcap::Capture<pcap::Active>, usize)> {
     let device = device_for(src)?;
     let dbg = debug_enabled();
@@ -442,8 +592,9 @@ fn open_capture(src: Ipv4Addr) -> Option<(pcap::Capture<pcap::Active>, usize)> {
         .timeout(READ_TIMEOUT_MS)
         .open()
         .ok()?;
-    // Keep only TCP segments whose SYN or RST flag is set: SYN/ACK (open) and
-    // RST (closed) are the only replies that answer a probe.
+    // Keep only TCP segments whose SYN or RST flag is set: a SYN/ACK and an RST
+    // are the only replies that answer a probe, in any mode. Our own outbound
+    // ACK probes carry neither bit and never come back through this filter.
     cap.filter("tcp and (tcp[13] & 6) != 0", true).ok()?;
     let link = cap.get_datalink();
     let offset = datalink_offset(link);
@@ -526,25 +677,24 @@ fn reader_loop(mut cap: pcap::Capture<pcap::Active>, offset: usize, shared: &Rec
                     }
                     continue;
                 };
-                let outcome = classify_flags(flags);
                 if dbg {
                     eprintln!(
-                        "[syn] pkt src={src_ip} sport={src_port} dport={dst_port} flags={flags:#04x} outcome={outcome:?}"
+                        "[syn] pkt src={src_ip} sport={src_port} dport={dst_port} flags={flags:#04x}"
                     );
                 }
                 // A SYN/ACK or RST identifies the port it came from: key the
-                // outcome on the reply's (source ip, source port), i.e. the
-                // scanned target and port. We deliberately do not match on the
-                // source port we forged — NAT/VPN can rewrite it in flight, so
-                // the reply arrives at the translated port. Our own outbound
-                // SYN/RST has our source ip, a key no probe waits on, so it is
-                // harmless; a lone SYN or other flags classify as Filtered and
-                // are dropped here.
-                if outcome == SynOutcome::Filtered {
+                // reply on its (source ip, source port), i.e. the scanned target
+                // and port. We deliberately do not match on the source port we
+                // forged — NAT/VPN can rewrite it in flight, so the reply
+                // arrives at the translated port. Our own outbound SYN has our
+                // source ip, a key no probe waits on, so it is harmless;
+                // anything that cannot answer a probe is dropped here, and the
+                // waiter turns the stored flags into a verdict for its mode.
+                if !is_probe_reply(flags) {
                     continue;
                 }
-                let mut map = shared.outcomes.lock().expect("syn receiver mutex poisoned");
-                map.entry((src_ip, src_port)).or_insert(outcome);
+                let mut map = shared.replies.lock().expect("syn receiver mutex poisoned");
+                map.entry((src_ip, src_port)).or_insert(flags);
                 shared.signal.notify_all();
             }
             Err(pcap::Error::TimeoutExpired) => continue,
@@ -557,13 +707,146 @@ fn reader_loop(mut cap: pcap::Capture<pcap::Active>, offset: usize, shared: &Rec
 mod tests {
     use super::*;
 
+    /// Whether a TCP segment's checksum verifies over its pseudo-header.
+    fn tcp_checksum_verifies(src: Ipv4Addr, dst: Ipv4Addr, seg: &[u8]) -> bool {
+        let mut pseudo = Vec::with_capacity(12 + seg.len());
+        pseudo.extend_from_slice(&src.octets());
+        pseudo.extend_from_slice(&dst.octets());
+        pseudo.push(0);
+        pseudo.push(IPPROTO_TCP);
+        pseudo.extend_from_slice(&(seg.len() as u16).to_be_bytes());
+        pseudo.extend_from_slice(seg);
+        checksum(&pseudo) == 0
+    }
+
     #[test]
     fn classify_covers_open_closed_filtered() {
-        assert_eq!(classify_flags(TCP_SYN | TCP_ACK), SynOutcome::Open);
-        assert_eq!(classify_flags(TCP_RST | TCP_ACK), SynOutcome::Closed);
-        assert_eq!(classify_flags(TCP_RST), SynOutcome::Closed);
-        assert_eq!(classify_flags(TCP_ACK), SynOutcome::Filtered);
-        assert_eq!(classify_flags(0), SynOutcome::Filtered);
+        assert_eq!(classify_flags(TCP_SYN | TCP_ACK), ProbeOutcome::Open);
+        assert_eq!(classify_flags(TCP_RST | TCP_ACK), ProbeOutcome::Closed);
+        assert_eq!(classify_flags(TCP_RST), ProbeOutcome::Closed);
+        assert_eq!(classify_flags(TCP_ACK), ProbeOutcome::Filtered);
+        assert_eq!(classify_flags(0), ProbeOutcome::Filtered);
+    }
+
+    #[test]
+    fn probe_modes_carry_their_own_flag_profile() {
+        assert_eq!(ProbeMode::Syn.flags(), TCP_SYN);
+        assert_eq!(ProbeMode::Ack.flags(), TCP_ACK);
+        assert_eq!(ProbeMode::Syn.label(), "syn");
+        assert_eq!(ProbeMode::Ack.label(), "ack");
+    }
+
+    #[test]
+    fn an_ack_probe_sets_only_ack_and_checksums_correctly() {
+        let src: Ipv4Addr = "192.168.1.10".parse().unwrap();
+        let dst: Ipv4Addr = "192.168.1.20".parse().unwrap();
+        let seg = build_tcp_probe(src, dst, 50000, 443, 0xdead_beef, 0x0bad_f00d, TCP_ACK);
+
+        assert_eq!(seg.len(), TCP_HEADER_LEN);
+        assert_eq!(seg[13], TCP_ACK, "an ACK probe carries the ACK flag alone");
+        assert_eq!(seg[13] & TCP_SYN, 0, "and never a SYN");
+        assert_eq!(seg[12] >> 4, 5, "data offset should be 5 words");
+        assert_eq!(
+            u32::from_be_bytes([seg[8], seg[9], seg[10], seg[11]]),
+            0x0bad_f00d,
+            "the acknowledgement number must reach the wire"
+        );
+        assert!(tcp_checksum_verifies(src, dst, &seg));
+    }
+
+    #[test]
+    fn an_ipv4_ack_packet_is_wellformed() {
+        let src: Ipv4Addr = "10.0.0.1".parse().unwrap();
+        let dst: Ipv4Addr = "10.0.0.2".parse().unwrap();
+        let ip = build_ipv4_probe(src, dst, 40080, 80, PROBE_SEQ, PROBE_ACK, TCP_ACK);
+
+        assert_eq!(ip.len(), IPV4_HEADER_LEN + TCP_HEADER_LEN);
+        assert_eq!(ip[9], IPPROTO_TCP);
+        assert_eq!(
+            u16::from_be_bytes([ip[2], ip[3]]) as usize,
+            IPV4_HEADER_LEN + TCP_HEADER_LEN
+        );
+        // The stored header checksum makes the header sum to zero.
+        assert_eq!(checksum(&ip[..IPV4_HEADER_LEN]), 0);
+        assert!(tcp_checksum_verifies(src, dst, &ip[IPV4_HEADER_LEN..]));
+
+        let (src_port, dst_port, flags) = parse_ipv4_tcp(&ip).expect("should parse");
+        assert_eq!((src_port, dst_port, flags), (40080, 80, TCP_ACK));
+    }
+
+    #[test]
+    fn the_syn_builders_still_produce_a_bare_syn() {
+        // The generalized builder must not have changed what --syn sends.
+        let src: Ipv4Addr = "10.1.1.1".parse().unwrap();
+        let dst: Ipv4Addr = "10.1.1.2".parse().unwrap();
+        assert_eq!(
+            build_tcp_syn(src, dst, 40022, 22, 7),
+            build_tcp_probe(src, dst, 40022, 22, 7, 0, TCP_SYN)
+        );
+        assert_eq!(
+            build_ipv4_syn(src, dst, 40022, 22, 7),
+            build_ipv4_probe(src, dst, 40022, 22, 7, 0, TCP_SYN)
+        );
+    }
+
+    #[test]
+    fn an_rst_means_closed_to_a_syn_but_unfiltered_to_an_ack() {
+        // The same reply, read by two different questions.
+        assert_eq!(
+            classify_reply(ProbeMode::Syn, TCP_RST | TCP_ACK),
+            ProbeOutcome::Closed
+        );
+        assert_eq!(
+            classify_reply(ProbeMode::Ack, TCP_RST | TCP_ACK),
+            ProbeOutcome::Unfiltered
+        );
+        assert_eq!(
+            classify_reply(ProbeMode::Ack, TCP_RST),
+            ProbeOutcome::Unfiltered
+        );
+    }
+
+    #[test]
+    fn silence_and_non_rst_replies_are_filtered_for_an_ack_probe() {
+        // Nothing but an RST answers an ACK probe; a stray SYN/ACK does not.
+        assert_eq!(
+            classify_reply(ProbeMode::Ack, TCP_SYN | TCP_ACK),
+            ProbeOutcome::Filtered
+        );
+        assert_eq!(classify_reply(ProbeMode::Ack, 0), ProbeOutcome::Filtered);
+    }
+
+    #[test]
+    fn an_ack_scan_never_claims_open_or_closed() {
+        // Whatever comes back, an ACK probe only ever reports firewall state:
+        // it cannot tell a listening port from a closed one.
+        for flags in 0u8..=u8::MAX {
+            let outcome = classify_reply(ProbeMode::Ack, flags);
+            assert!(
+                matches!(outcome, ProbeOutcome::Unfiltered | ProbeOutcome::Filtered),
+                "flags {flags:#04x} produced {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn syn_classification_is_unchanged_by_the_mode_split() {
+        for flags in 0u8..=u8::MAX {
+            assert_eq!(classify_reply(ProbeMode::Syn, flags), classify_flags(flags));
+        }
+    }
+
+    #[test]
+    fn only_an_rst_or_syn_ack_counts_as_a_reply() {
+        assert!(is_probe_reply(TCP_RST));
+        assert!(is_probe_reply(TCP_RST | TCP_ACK));
+        assert!(is_probe_reply(TCP_SYN | TCP_ACK));
+        // A bare SYN is someone else's traffic, not an answer to a probe.
+        assert!(!is_probe_reply(TCP_SYN));
+        assert!(!is_probe_reply(0));
+        // Our own outbound ACK probes can never be mistaken for replies, which
+        // matters most on loopback, where the capture sees both directions.
+        assert!(!is_probe_reply(ProbeMode::Ack.flags()));
     }
 
     #[test]
