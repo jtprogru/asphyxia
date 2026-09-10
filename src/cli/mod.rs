@@ -1,8 +1,80 @@
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Parser};
+use clap::{ArgGroup, Parser, ValueEnum};
 
 use crate::output::OutputFormat;
+use crate::scanner::syn::ProbeMode;
+
+/// Which probe a port scan sends, and hence which port states it can report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum ScanMode {
+    /// Full TCP connect: needs no privileges and reports open ports.
+    #[default]
+    Connect,
+    /// Half-open SYN over a raw socket: open, closed or filtered.
+    Syn,
+    /// Lone ACK over a raw socket: unfiltered or filtered. It maps what a
+    /// firewall lets through, and never claims a port is open or closed.
+    Ack,
+}
+
+/// Why a raw-packet scan mode cannot run, so the scan falls back to connect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unavailable {
+    /// No raw socket: the process lacks root / `CAP_NET_RAW`.
+    RawSocket,
+    /// No libpcap/BPF capture, so replies could never be read.
+    Capture,
+    /// The target is IPv6, which the raw-packet path does not handle.
+    Ipv6,
+}
+
+impl ScanMode {
+    /// The raw-packet probe this mode sends, or `None` for the connect scan.
+    pub fn probe_mode(self) -> Option<ProbeMode> {
+        match self {
+            ScanMode::Connect => None,
+            ScanMode::Syn => Some(ProbeMode::Syn),
+            ScanMode::Ack => Some(ProbeMode::Ack),
+        }
+    }
+
+    /// Whether this mode needs a raw socket and a packet capture to run.
+    pub fn needs_raw(self) -> bool {
+        self.probe_mode().is_some()
+    }
+
+    /// Stable name for this mode in structured output and messages.
+    pub fn label(self) -> &'static str {
+        match self.probe_mode() {
+            Some(mode) => mode.label(),
+            None => "connect",
+        }
+    }
+
+    /// Give up on this mode and fall back to a connect scan, with the message
+    /// saying which mode was dropped and why.
+    ///
+    /// Falling back is not a silent equivalence: a connect scan answers a
+    /// different question (open/closed) than an ACK scan (unfiltered/filtered),
+    /// so the operator has to be told, and every result carries the mode that
+    /// actually produced it.
+    pub fn downgrade(self, cause: Unavailable) -> (ScanMode, String) {
+        let reason = match cause {
+            Unavailable::RawSocket => "needs root/CAP_NET_RAW",
+            Unavailable::Capture => "needs libpcap/BPF to read replies",
+            Unavailable::Ipv6 => "is IPv4-only",
+        };
+        (
+            ScanMode::Connect,
+            format!(
+                "{} scan {} — falling back to connect scan",
+                self.label().to_uppercase(),
+                reason
+            ),
+        )
+    }
+}
 
 /// Command line arguments for the Asphyxia network scanner
 #[derive(Parser, Debug)]
@@ -32,6 +104,9 @@ Examples:
 
   # SYN/stealth scan via raw sockets (needs root/CAP_NET_RAW)
   sudo asphyxia ps -t example.com --top-ports 1000 --syn
+
+  # ACK scan: which ports a firewall lets through (unfiltered) or blocks (filtered)
+  sudo asphyxia ps -t example.com --top-ports 100 --scan ack
 
   # Grab banners and identify services on open ports
   asphyxia ps -t example.com -s 22,80,443 --sV
@@ -105,6 +180,7 @@ Required arguments:
     --ports <NAME>               Scan a named port set (web, mail, db, remote, windows)
     -u, --udp                    Scan UDP ports instead of TCP (open or open|filtered)
     --syn                        SYN/stealth scan via raw sockets (needs root; else connect)
+    --scan <MODE>                Probe type: connect (default), syn, or ack (raw modes need root)
     --sV                         Grab banners and identify the service on each open port
     --resume <PATH>              Checkpoint progress and resume from PATH if it exists
     --rate <PPS>                 Cap connection attempts per second (0 = no cap)
@@ -182,8 +258,18 @@ pub enum Args {
         udp: bool,
 
         /// SYN/stealth scan via raw sockets (needs root/CAP_NET_RAW; else falls back to connect)
-        #[arg(long = "syn", conflicts_with = "udp")]
+        #[arg(long = "syn", conflicts_with_all = ["udp", "scan"])]
         syn: bool,
+
+        /// Probe type: connect (default), syn (half-open), or ack (firewall state)
+        #[arg(
+            long = "scan",
+            value_name = "MODE",
+            value_enum,
+            default_value_t = ScanMode::Connect,
+            conflicts_with = "udp"
+        )]
+        scan: ScanMode,
 
         /// Grab banners and identify the service on each open port (TCP only)
         #[arg(long = "sV", visible_alias = "banner")]
@@ -361,5 +447,137 @@ impl Args {
         match self {
             Args::PortScan { rate, .. } | Args::AddressScan { rate, .. } => *rate,
         }
+    }
+
+    /// The probe type the invocation asks for, folding the older `--syn` flag
+    /// into [`ScanMode`]. UDP and address scans always use plain sockets.
+    pub fn scan_mode(&self) -> ScanMode {
+        match self {
+            Args::PortScan { udp: true, .. } | Args::AddressScan { .. } => ScanMode::Connect,
+            Args::PortScan { syn, scan, .. } => {
+                if *syn {
+                    ScanMode::Syn
+                } else {
+                    *scan
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn port_scan(extra: &[&str]) -> Args {
+        let mut argv = vec!["asphyxia", "ps", "-t", "127.0.0.1", "-s", "80"];
+        argv.extend_from_slice(extra);
+        Args::parse_from(argv)
+    }
+
+    #[test]
+    fn default_port_scan_is_a_connect_scan() {
+        assert_eq!(port_scan(&[]).scan_mode(), ScanMode::Connect);
+        assert_eq!(ScanMode::Connect.probe_mode(), None);
+        assert!(!ScanMode::Connect.needs_raw());
+    }
+
+    #[test]
+    fn scan_flag_selects_the_probe_type() {
+        assert_eq!(port_scan(&["--scan", "ack"]).scan_mode(), ScanMode::Ack);
+        assert_eq!(port_scan(&["--scan", "syn"]).scan_mode(), ScanMode::Syn);
+        assert_eq!(
+            port_scan(&["--scan", "connect"]).scan_mode(),
+            ScanMode::Connect
+        );
+    }
+
+    #[test]
+    fn the_syn_flag_is_the_syn_mode() {
+        assert_eq!(port_scan(&["--syn"]).scan_mode(), ScanMode::Syn);
+    }
+
+    #[test]
+    fn udp_scans_never_take_a_raw_mode() {
+        // --udp conflicts with both flags, so a UDP scan is always connect.
+        assert_eq!(port_scan(&["--udp"]).scan_mode(), ScanMode::Connect);
+    }
+
+    #[test]
+    fn scan_and_syn_flags_conflict() {
+        let parsed = Args::try_parse_from([
+            "asphyxia",
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "80",
+            "--syn",
+            "--scan",
+            "ack",
+        ]);
+        assert!(parsed.is_err(), "--syn and --scan must not be combined");
+    }
+
+    #[test]
+    fn ack_and_udp_conflict() {
+        let parsed = Args::try_parse_from([
+            "asphyxia",
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "80",
+            "--scan",
+            "ack",
+            "--udp",
+        ]);
+        assert!(parsed.is_err(), "--scan ack and --udp must not be combined");
+    }
+
+    #[test]
+    fn raw_modes_map_to_their_packet_profiles() {
+        assert_eq!(ScanMode::Syn.probe_mode(), Some(ProbeMode::Syn));
+        assert_eq!(ScanMode::Ack.probe_mode(), Some(ProbeMode::Ack));
+        assert!(ScanMode::Syn.needs_raw());
+        assert!(ScanMode::Ack.needs_raw());
+    }
+
+    #[test]
+    fn labels_are_stable_output_names() {
+        assert_eq!(ScanMode::Connect.label(), "connect");
+        assert_eq!(ScanMode::Syn.label(), "syn");
+        assert_eq!(ScanMode::Ack.label(), "ack");
+    }
+
+    #[test]
+    fn every_downgrade_lands_on_connect_and_says_why() {
+        for cause in [
+            Unavailable::RawSocket,
+            Unavailable::Capture,
+            Unavailable::Ipv6,
+        ] {
+            let (mode, message) = ScanMode::Ack.downgrade(cause);
+            assert_eq!(mode, ScanMode::Connect);
+            assert!(
+                message.contains("ACK"),
+                "should name the dropped mode: {message}"
+            );
+            assert!(
+                message.contains("falling back to connect scan"),
+                "should say what happens instead: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn downgrade_messages_distinguish_their_causes() {
+        let (_, raw) = ScanMode::Ack.downgrade(Unavailable::RawSocket);
+        let (_, capture) = ScanMode::Ack.downgrade(Unavailable::Capture);
+        let (_, ipv6) = ScanMode::Ack.downgrade(Unavailable::Ipv6);
+        assert!(raw.contains("CAP_NET_RAW"));
+        assert!(capture.contains("libpcap"));
+        assert!(ipv6.contains("IPv4-only"));
     }
 }
