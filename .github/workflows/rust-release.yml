@@ -236,7 +236,8 @@ jobs:
           # there is no `version` stanza because brew scans the version out of the
           # release URL and audit calls an explicit one redundant. Both were once
           # hand-fixed in the tap and then reverted by this generator, so they live
-          # here now.
+          # here now. The `test` block is required by FormulaAudit/Test for the
+          # same reason: brew style fails the tap without one.
           cat <<EOL > Formula/asphyxia.rb
           class Asphyxia < Formula
             desc "Fast and efficient network scanner written in Rust"
@@ -266,6 +267,10 @@ jobs:
 
             def install
               bin.install "asphyxia"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/asphyxia --version")
             end
           end
           EOL
