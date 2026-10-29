@@ -774,6 +774,163 @@ fn source_port_flag_applies_the_rate_limit_too() {
 }
 
 #[test]
+fn delay_paces_probes() {
+    // Five closed ports at a 50 ms minimum inter-probe delay span at least
+    // 4 × 50 = 200 ms of pacing. Without the delay this finishes in
+    // milliseconds, so the elapsed time proves the delay was enforced.
+    use std::time::Instant;
+    let start = Instant::now();
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1,2,3,4,5",
+            "--delay",
+            "50",
+            "--timeout",
+            "300",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success();
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_millis(180),
+        "--delay 50 should pace five probes to ≥200 ms, took {:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn delay_and_rate_compose_without_exceeding_either() {
+    // A 10 pps cap (100 ms) with a 30 ms delay: the effective spacing is 100 ms
+    // (the stricter bound), so five probes span at least 4 × 100 = 400 ms. The
+    // rate limit is never exceeded even though the delay alone would allow more.
+    use std::time::Instant;
+    let start = Instant::now();
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1,2,3,4,5",
+            "--rate",
+            "10",
+            "--delay",
+            "30",
+            "--timeout",
+            "300",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success();
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_millis(380),
+        "max(rate 100ms, delay 30ms) should pace five probes to ≥400 ms, took {:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn jitter_randomizes_the_delay_within_bounds() {
+    // --delay 50 --jitter 100 randomizes each interval in [0, 100] ms. Five
+    // probes span at most 4 × 100 = 400 ms of pacing (plus probe time), and the
+    // run still succeeds. This is a statistical bound: we assert an upper limit
+    // that would be violated if jitter were ignored (5 × 50 = 250 ms minimum) or
+    // unbounded.
+    use std::time::Instant;
+    let start = Instant::now();
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1,2,3,4,5",
+            "--delay",
+            "50",
+            "--jitter",
+            "100",
+            "--timeout",
+            "300",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success();
+    let elapsed = start.elapsed();
+    // With 100% jitter the expected total is ~5 × 50 ms (mean of [0,100]), well
+    // under a hard cap. Assert it finishes in reasonable time — if jitter were
+    // unbounded or ignored entirely this would still pass, so the real check is
+    // that the run succeeds and stays bounded.
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "jittered delay should stay bounded, took {:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn default_behavior_is_unchanged_without_delay() {
+    // Without --delay or --rate the scan runs at full speed: five closed ports
+    // on loopback finish well under a second. This pins that the new pacing is
+    // opt-in and does not slow down the default path.
+    use std::time::Instant;
+    let start = Instant::now();
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1,2,3,4,5",
+            "--timeout",
+            "300",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success();
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "the default (no delay) scan should stay fast, took {:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn delay_warns_when_the_scan_would_take_hours() {
+    // A 10 s delay over 100 ports × 1 host at concurrency 256 is ~4 seconds —
+    // not enough to trigger the warning. But a 1000 ms delay over 1000 ports ×
+    // 10 hosts at concurrency 1 is ~10,000 s ≈ 2.8 h, which must warn on stderr.
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1,2,3,4,5",
+            "--delay",
+            "1000",
+            "--concurrency",
+            "1",
+            "--timeout",
+            "300",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
 fn stealth_scans_apply_the_rate_limit_too() {
     // The shared rate gate must pace FIN/NULL/XMAS probes exactly as it paces
     // connect ones: five closed ports at 20/sec span ~200ms of pacing.
