@@ -569,11 +569,25 @@ fn main() {
             nmap,
             nmap_args,
             timeout,
+            source_port,
             ..
         } => {
             let connect_timeout = Duration::from_millis(timeout);
             let timeout = Some(connect_timeout);
             let proto = if udp { "udp" } else { "tcp" };
+
+            // A fixed source port only applies to raw TCP probes. In a connect or
+            // UDP scan it has no effect, so say so rather than silently ignore it.
+            if let Some(port) = source_port {
+                if !requested_mode.needs_raw() || udp {
+                    eprintln!(
+                        "{}",
+                        format!("--source-port {port} applies to raw scans only — ignoring it for this scan").yellow()
+                    );
+                } else {
+                    syn::set_source_port(port);
+                }
+            }
 
             // The raw-packet modes (--syn, --scan ack) need a raw socket (root /
             // CAP_NET_RAW). When asked for but unavailable, warn once and fall
