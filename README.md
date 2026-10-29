@@ -182,6 +182,8 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `--nmap` | After the scan, run nmap on each host's open ports for a deep dive |
 | `--nmap-args <ARGS>` | Custom nmap arguments (replace the default `-sV -sC`); implies `--nmap` |
 | `--source-port <PORT>` | Fixed source port for raw TCP probes (raw modes only; ignored with a warning in connect/UDP scans) — useful for testing firewall rules keyed on source port |
+| `--delay <MS>` | Minimum delay between probes, in milliseconds. Combined with `--jitter`, each probe's interval is randomized within ±PCT of this value |
+| `--jitter <PCT>` | Jitter as a percentage (0–100) of `--delay`, randomizing each probe's interval within ±PCT. Requires `--delay` |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-e, --interface <NAME>` (`--iface`) | Bind every probe to this network interface (e.g. `en0`), like `ssh -B` / `nmap -e` |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
@@ -614,6 +616,7 @@ To tune a scan:
 - **`--timeout`** — on a responsive LAN a shorter timeout (e.g. `--timeout 500`) makes unreachable hosts give up much sooner.
 - **`--retries`** — on a lossy network (Wi-Fi, VPN, distant hosts) a dropped SYN makes an open port or live host look closed/down. A small value like `--retries 1` or `--retries 2` re-probes only when a probe got *no answer* (timeout/unreachable); a port that actively refuses the connection has already answered, so it is never retried and closed-port scans stay fast.
 - **`--rate`** — cap the number of connection attempts per second across the whole scan (e.g. `--rate 1000`). This bounds how hard the scan hits the network regardless of `--concurrency`: a single global pacer admits one probe per `1/rate` seconds, so highly-concurrent scans still stay under the limit. Leave it unset for no cap.
+- **`--delay <MS>` / `--jitter <PCT>`** — set a minimum inter-probe delay (e.g. `--delay 250`) and optionally randomize each probe's interval within ±PCT of that value (`--jitter 20` → 200–300 ms). The delay is enforced by the same global pacer as `--rate`: each probe reserves a slot spaced by `max(rate_interval, delayed_interval)`, so combining them never exceeds either bound — the stricter one always wins. Applies to all scan modes (connect, SYN, ACK, FIN/NULL/XMAS, UDP). Without either flag the default behavior is unchanged: no delay, no jitter.
 - **`-T0`..`-T5`** — timing profiles that preset `--timeout`, `--concurrency`, `--retries`, and `--rate` in one shot, from `-T0` (paranoid: serial and slow) through `-T3` (the normal defaults) to `-T5` (insane: fastest, widest concurrency, no cap). Any individual flag still overrides the profile, e.g. `-T4 --timeout 800`.
 
 For example, a `/24` with the defaults completes in roughly one timeout window instead of serially walking every address.
