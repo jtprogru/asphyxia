@@ -541,10 +541,18 @@ fn main() {
     // Size the global rayon pool for I/O-bound scanning before any scan runs.
     init_scan_pool(args.concurrency());
 
-    // Install the global rate limit (a no-op when unset or zero) before scanning.
-    if let Some(pps) = args.rate() {
-        rate::install(pps);
-    }
+    // Install the global pacer: a rate cap and/or a minimum inter-probe delay
+    // (with optional jitter). The stricter of the two always wins, so combining
+    // them never exceeds either bound. A no-op when neither is set.
+    let pps = args.rate().unwrap_or(0);
+    let delay_ms = args.delay().unwrap_or(0);
+    let jitter_pct = args.jitter().unwrap_or(0);
+    rate::install(pps, delay_ms, jitter_pct);
+
+    // Capture the delay and concurrency before `args` is moved into the
+    // subcommand match below.
+    let requested_delay_ms = args.delay();
+    let scan_concurrency = args.concurrency().max(1);
 
     let format = args.output_format();
     let output_file = args.output_file().cloned();
@@ -723,6 +731,29 @@ fn main() {
 
             if resolved.is_empty() {
                 return;
+            }
+
+            // Warn when the effective scan duration becomes unreasonable: with a
+            // per-probe delay, every (host, port) job waits out at least that
+            // interval, so the lower bound on wall-clock time is roughly
+            // delay × jobs / concurrency. A large sweep with a generous delay can
+            // take hours — say so before it starts rather than after.
+            if let Some(delay_ms) = requested_delay_ms.filter(|d| *d > 0 && !resolved.is_empty()) {
+                let jobs = resolved.len() as u64 * ports.len() as u64;
+                let min_secs = (delay_ms as u128 * jobs as u128 / scan_concurrency as u128) / 1000;
+                if min_secs > 3600 {
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "with --delay {} ms over {} ports × {} host(s), the scan will take at least ~{} h — consider a narrower port set or a smaller delay",
+                            delay_ms,
+                            ports.len(),
+                            resolved.len(),
+                            min_secs / 3600
+                        )
+                        .yellow()
+                    );
+                }
             }
 
             // Start the shared pcap/BPF receiver for raw-probe replies now that
