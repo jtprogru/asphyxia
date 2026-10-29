@@ -263,10 +263,11 @@ fn scan_one(
     mode: ScanMode,
 ) -> Option<Finding> {
     if udp {
-        return port::scan_udp_port(ip, port, timeout, retries).map(|hit| Finding {
+        let hit = port::scan_udp_port(ip, port, timeout, retries);
+        return Some(Finding {
             port: hit.port,
             latency: hit.latency,
-            status: if hit.open { "open" } else { "open|filtered" },
+            status: hit.status,
             scan: "connect",
             service: None,
             banner: None,
@@ -859,9 +860,12 @@ fn main() {
 
             match format {
                 OutputFormat::Text => {
-                    // An ACK or FIN/NULL/XMAS scan lists a state for every probed
-                    // port, not a list of open ports, so it gets its own heading.
-                    let heading = if mode == ScanMode::Ack || mode.silent_means_open_filtered() {
+                    // An ACK, FIN/NULL/XMAS or UDP scan lists a state for every
+                    // probed port, not a list of open ports, so it gets its own
+                    // heading.
+                    let reports_states =
+                        udp || mode == ScanMode::Ack || mode.silent_means_open_filtered();
+                    let heading = if reports_states {
                         "Port states"
                     } else {
                         "Opened ports"
@@ -898,7 +902,7 @@ fn main() {
                             }
                             println!("{}", line);
                         }
-                    } else if mode == ScanMode::Ack || mode.silent_means_open_filtered() {
+                    } else if reports_states {
                         println!("\n{}", "No port states observed 😕".yellow());
                     } else {
                         println!("\n{}", "No open ports found 😕".yellow());
