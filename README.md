@@ -35,6 +35,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Resumable scans** — checkpoint a long port scan with `--resume <file>` and pick it up where it stopped after a Ctrl-C, crash, or dropped link.
 - **SYN/stealth scan** — half-open SYN scanning with `--syn` (IPv4, needs privileges): SYNs are sent over a raw socket and replies captured with libpcap/BPF, so it works the same on macOS and Linux, with automatic fallback to the connect scan.
 - **ACK scan** — `--scan ack` maps the firewall instead of the services: it reports which ports a filtering device lets through (`unfiltered`) and which it swallows (`filtered`), over the same raw-socket/pcap path and the same automatic fallback.
+- **FIN / NULL / XMAS scans** — `--scan fin|null|xmas` send SYN-less probes (a lone FIN, no flags at all, or FIN+PSH+URG): per RFC 793 a closed port answers with an RST while an open one drops the segment silently, so results are `closed` or the honest `open|filtered`, over the same raw-socket/pcap path and fallback.
 - **Interface binding** — pin every probe to a specific network interface with `-e/--interface` (like `ssh -B` or `nmap -e`), so a host reachable only through a VPN, tunnel, or a more specific route is scanned over the right link instead of the default route.
 
 > Note: IPv6 subnet and range scans are capped at 65 536 addresses (e.g. a `/112`), since larger IPv6 spaces are impractical to walk exhaustively.
@@ -127,6 +128,11 @@ sudo asphyxia ps -t example.com --top-ports 1000 --syn
 # ACK scan: which ports the firewall lets through (unfiltered) or blocks (filtered)
 sudo asphyxia ps -t example.com --top-ports 100 --scan ack
 
+# FIN / NULL / XMAS stealth scans: closed, or open|filtered when silent
+sudo asphyxia ps -t example.com --top-ports 100 --scan fin
+sudo asphyxia ps -t example.com --top-ports 100 --scan null
+sudo asphyxia ps -t example.com --top-ports 100 --scan xmas
+
 # Grab banners and identify services on open ports
 asphyxia ps -t example.com -s 22,80,443 --sV
 
@@ -163,7 +169,7 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `-a, --all-ports` | Scan the entire port range (1-65535) |
 | `-u, --udp` | Scan UDP ports instead of TCP (results are `open` or `open\|filtered`) |
 | `--syn` | SYN/stealth scan via raw sockets (IPv4; needs root/`CAP_NET_RAW`, else falls back to connect) |
-| `--scan <MODE>` | Probe type: `connect` (default), `syn`, or `ack` (firewall state; raw modes need root) |
+| `--scan <MODE>` | Probe type: `connect` (default), `syn`, `ack` (firewall state), or `fin`/`null`/`xmas` (stealth; closed or open\|filtered). Raw modes need root, else fall back to connect |
 | `--sV` (`--banner`) | Grab banners and identify the service on each open TCP port |
 | `--resume <PATH>` | Checkpoint progress to a file and resume from it if it already exists |
 | `--top-ports <N>` | Scan the `N` most common TCP ports (frequency-ordered, up to 1000) |
@@ -252,6 +258,37 @@ Details and limitations:
 - **Checkpoints are not interchangeable** — a `--resume` state from an ACK scan is never resumed as a connect/SYN scan of the same grid, or the other way round.
 - `--scan ack` is mutually exclusive with `--udp` and `--syn` (`--syn` is the same thing as `--scan syn`).
 
+#### FIN / NULL / XMAS scans (`--scan fin|null|xmas`)
+
+These three probes carry no SYN at all, which makes them the most stealthy of the family — a stateful filter that keys on SYN never sees one:
+
+- **FIN** (`--scan fin`) — a lone TCP FIN.
+- **NULL** (`--scan null`) — no flags set at all; invisible to filters that key on any single flag.
+- **XMAS** (`--scan xmas`) — FIN + PSH + URG, the "Christmas lights" profile.
+
+Per RFC 793 a closed port answers *any* unexpected segment with an RST, while an open port drops it silently. So all three modes read their replies the same way:
+
+- **`closed`** — an RST came back; the port is not listening (or something answered for it).
+- **`open|filtered`** — silence within `--timeout`. An open port and a filtering device are indistinguishable here, so Asphyxia reports both possibilities rather than guessing.
+
+```bash
+sudo asphyxia ps -t example.com --top-ports 100 --scan fin
+sudo asphyxia ps -t example.com --top-ports 100 --scan null -o jsonl
+# {"ip":"93.184.216.34","port":22,"proto":"tcp","scan":"fin","latency_ms":5,"status":"closed"}
+# {"ip":"93.184.216.34","port":23,"proto":"tcp","scan":"null","latency_ms":2000,"status":"open|filtered"}
+```
+
+Details and limitations:
+
+- **Every probed port is reported**, like an ACK scan: silence *is* the finding, so `open|filtered` ports are results too. Keep the port set narrow (`--top-ports`, `-s`) — a silent port waits out the full `--timeout`.
+- **Never a bare `open`.** Silence is reported as `open|filtered`, never merged into `open`; only an RST yields the definitive `closed`.
+- **Same requirements and fallback as `--syn`** — root/`CAP_NET_RAW`, libpcap, IPv4 only. When any of those is missing, Asphyxia says so on stderr and falls back to a connect scan; that fallback answers a *different* question (open/closed), which is why every record carries a `scan` field naming the probe that produced it: `fin`, `null`, `xmas`, `ack`, `syn` or `connect`.
+- **`--retries` re-probes silence only** — a lost probe and an open/filtered one look identical, so on a lossy link `--retries 1` buys back some certainty. `--rate` and `-T` profiles apply exactly as they do to the other modes.
+- **`--sV` and `--nmap` do nothing here** and say so: both need an open port, which these scans never establish definitively.
+- **Checkpoints are not interchangeable** — a `--resume` state from a FIN scan is keyed `tcp-fin`, distinct from `tcp-null`, `tcp-xmas`, `tcp-ack` and plain `tcp`; one mode's checkpoint is never resumed as another scan of the same grid.
+- **Windows caveat (documented, not guessed)** — some Windows stacks answer an RST to these probes even on *open* ports; if you see a wall of `closed` against a Windows host that connect-scan says has open ports, that is likely why. Asphyxia reports what the wire said and does not second-guess it.
+- `--scan fin|null|xmas` are mutually exclusive with `--udp` and `--syn`.
+
 #### Selecting the outgoing interface (`-e`/`--interface`)
 
 By default, the OS routes every probe through whatever the routing table picks — usually the default route. When a host is reachable only through a particular interface (a VPN, a tunnel, a secondary link carrying a more specific route whose source address the default route never uses), the probes have to be pinned to that interface, exactly as `ssh -B en0` or `nmap -e en0` do. Otherwise, the kernel sends from the wrong source address and the replies never come back, so an open port looks closed. `-e/--interface` binds every probe socket to the named interface for both `ps` and `as`.
@@ -331,7 +368,7 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 
 ### Machine-readable output (`--output`)
 
-By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto`, `scan` (the probe that produced it: `connect`, `syn` or `ack`), `latency_ms`, and `status`.
+By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto`, `scan` (the probe that produced it: `connect`, `syn`, `ack`, `fin`, `null` or `xmas`), `latency_ms`, and `status`.
 
 ```bash
 # One JSON object per open port, on its own line (JSON Lines)
@@ -510,6 +547,11 @@ sudo asphyxia ps -t scanme.nmap.org --top-ports 1000 --syn
 
 # ACK scan: what the firewall passes (unfiltered) and what it drops (filtered)
 sudo asphyxia ps -t scanme.nmap.org --top-ports 100 --scan ack
+
+# FIN / NULL / XMAS stealth scans: closed, or open|filtered when silent
+sudo asphyxia ps -t scanme.nmap.org --top-ports 100 --scan fin
+sudo asphyxia ps -t scanme.nmap.org --top-ports 100 --scan null
+sudo asphyxia ps -t scanme.nmap.org --top-ports 100 --scan xmas
 
 # Find open ports fast, then hand them to nmap for a deep dive
 asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
