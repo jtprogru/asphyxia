@@ -555,6 +555,188 @@ fn ack_scan_rejects_a_udp_pairing() {
 }
 
 #[test]
+fn stealth_scans_run_or_fall_back_cleanly() {
+    // Port 1 on loopback is closed. With privileges each profile draws an RST
+    // (closed); without them the scan says so and falls back to a connect probe,
+    // which finds nothing either way. Either path must end in success with no
+    // result claiming "open".
+    for mode in ["fin", "null", "xmas"] {
+        let assertion = asphyxia()
+            .args([
+                "ps",
+                "-t",
+                "127.0.0.1",
+                "-s",
+                "1",
+                "--scan",
+                mode,
+                "--timeout",
+                "300",
+                "-o",
+                "jsonl",
+            ])
+            .assert()
+            .success();
+        let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).into_owned();
+        assert!(
+            !stdout.contains("\"status\":\"open\""),
+            "{mode} must not report a bare open: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn stealth_scans_report_rfc793_states_and_their_mode() {
+    // Port 1 on loopback. With privileges the probe draws an RST and the port is
+    // reported closed; without them the fallback connect probe finds nothing.
+    // Whatever happens, any result must carry its mode and only a state the
+    // profile can actually produce — never "unfiltered", which belongs to ACK.
+    for (mode, scan) in [("fin", "fin"), ("null", "null"), ("xmas", "xmas")] {
+        let assertion = asphyxia()
+            .args([
+                "ps",
+                "-t",
+                "127.0.0.1",
+                "-s",
+                "1",
+                "--scan",
+                mode,
+                "--timeout",
+                "300",
+                "-o",
+                "jsonl",
+            ])
+            .assert()
+            .success();
+        let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).into_owned();
+        for line in stdout.lines() {
+            assert!(
+                line.contains(&format!("\"scan\":\"{scan}\"")),
+                "a {mode} result must record the probe that produced it: {line}"
+            );
+            assert!(
+                line.contains("\"status\":\"closed\"")
+                    || line.contains("\"status\":\"open|filtered\""),
+                "a {mode} result must be closed or open|filtered: {line}"
+            );
+        }
+        assert!(
+            !stdout.contains("\"status\":\"unfiltered\""),
+            "{mode} results are not firewall states: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn stealth_scans_fall_back_visibly_for_an_ipv6_target() {
+    // The raw path is IPv4-only (and needs privileges). Whichever check trips
+    // first, the operator is told the scan changed question before the results
+    // arrive — FIN/NULL/XMAS have no connect equivalent that answers their
+    // question.
+    for mode in ["fin", "null", "xmas"] {
+        asphyxia()
+            .args([
+                "ps",
+                "-t",
+                "::1",
+                "-s",
+                "1",
+                "--scan",
+                mode,
+                "--timeout",
+                "300",
+                "-o",
+                "json",
+            ])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("falling back to connect scan"));
+    }
+}
+
+#[test]
+fn stealth_scans_reject_a_udp_pairing() {
+    for mode in ["fin", "null", "xmas"] {
+        asphyxia()
+            .args(["ps", "-t", "127.0.0.1", "-s", "1", "--scan", mode, "--udp"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("cannot be used with"));
+    }
+}
+
+#[test]
+fn stealth_scans_apply_the_rate_limit_too() {
+    // The shared rate gate must pace FIN/NULL/XMAS probes exactly as it paces
+    // connect ones: five closed ports at 20/sec span ~200ms of pacing.
+    use std::time::Instant;
+    let start = Instant::now();
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1,2,3,4,5",
+            "--scan",
+            "fin",
+            "--rate",
+            "20",
+            "--timeout",
+            "300",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success();
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_millis(150),
+        "the rate limit should pace FIN probes, took {:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn stealth_scans_checkpoint_under_their_own_key() {
+    // A --resume state from a FIN scan must be resumable as FIN and never mix
+    // with the other modes. The key is applied before any probe runs, so this
+    // holds whether or not the process has raw-socket privileges: hand-craft a
+    // fully-completed FIN state claiming port 1 is closed, then run the same
+    // command — the recorded finding must be reused (proving the `tcp-fin` key
+    // matched) and no job re-scanned.
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("asphyxia-resume-fin-{}.json", std::process::id()));
+
+    let state = r#"{"proto":"tcp-fin","targets":["127.0.0.1"],"ports":[1],"job_count":1,"done":[true],"findings":[{"host":0,"port":1,"latency_ms":3,"status":"closed","scan":"fin"}]}"#;
+    std::fs::write(&path, state).unwrap();
+
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--scan",
+            "fin",
+            "--timeout",
+            "300",
+            "--resume",
+            path.to_str().unwrap(),
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"port\":1"))
+        .stdout(predicate::str::contains("\"status\":\"closed\""))
+        .stdout(predicate::str::contains("\"scan\":\"fin\""));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn udp_scan_reports_proto_udp_in_json() {
     // A UDP probe to a closed loopback port typically draws an ICMP
     // port-unreachable (closed → not reported) or stays silent
