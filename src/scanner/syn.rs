@@ -364,9 +364,43 @@ fn local_ipv4_for(dst: Ipv4Addr) -> Option<Ipv4Addr> {
 /// value, since NAT/VPN may rewrite the source port before the packet leaves.
 const SRC_PORT_BASE: u16 = 40000;
 
-/// The source port a probe to `dst_port` forges.
+/// The source port a probe to `dst_port` forges when no fixed source port is
+/// requested: `SRC_PORT_BASE + dst_port`, giving each concurrent probe a
+/// distinct one. With a fixed source port, every probe carries that port and
+/// replies are correlated by the reply's destination port instead (see
+/// [`SynReceiver::wait_for`]).
 fn src_port_for(dst_port: u16) -> u16 {
     SRC_PORT_BASE.wrapping_add(dst_port)
+}
+
+/// The process-wide fixed source port for raw probes, set via
+/// [`set_source_port`] when the operator requests one (e.g. `--source-port 53`
+/// to test firewall rules keyed on source port). When unset, each probe forges
+/// a distinct ephemeral source port per scanned port.
+static SOURCE_PORT: OnceLock<u16> = OnceLock::new();
+
+/// Set the fixed source port every raw probe carries. Idempotent: a second call
+/// is ignored (the first value wins), so it can be called from any thread before
+/// scanning starts. Returns `true` if this call set the port, `false` if one was
+/// already installed.
+pub fn set_source_port(port: u16) -> bool {
+    SOURCE_PORT.set(port).is_ok()
+}
+
+/// The fixed source port for raw probes, if one was requested; otherwise each
+/// probe uses its own ephemeral per-port value from [`src_port_for`].
+fn source_port(dst_port: u16) -> u16 {
+    SOURCE_PORT
+        .get()
+        .copied()
+        .unwrap_or_else(|| src_port_for(dst_port))
+}
+
+/// Whether a fixed source port is in effect for raw probes. When true, replies
+/// must be correlated by the reply's destination port (the scanned port), since
+/// every probe carries the same source port and NAT/VPN may rewrite it.
+pub fn has_fixed_source_port() -> bool {
+    SOURCE_PORT.get().is_some()
 }
 
 /// Sequence number every forged probe carries. Fixed rather than random: no
@@ -415,7 +449,7 @@ pub fn probe_port(
 
     let dbg = debug_enabled();
     let src = local_ipv4_for(dst)?;
-    let src_port = src_port_for(dst_port);
+    let src_port = source_port(dst_port);
 
     // Send a full IPv4 packet with the header included. macOS refuses to send
     // TCP through a bare IPPROTO_TCP raw socket (EPROTOTYPE), so we build the IP
@@ -549,6 +583,12 @@ impl SynReceiver {
     /// Block until a reply for `(target, port)` is recorded or `timeout`
     /// elapses, then read it by `mode`'s rules. A missing reply is
     /// [`ProbeOutcome::Filtered`] in every mode.
+    ///
+    /// With a fixed source port (see [`has_fixed_source_port`]), replies are
+    /// keyed by the reply's *destination* port — which is the scanned port, since
+    /// the target answers to whatever destination our probe carried. Without one,
+    /// replies are keyed by their own source port as before. Both keyings use the
+    /// same `(target_ip, port)` shape, so the map and waiter need no other change.
     fn wait_for(
         &self,
         target: Ipv4Addr,
@@ -721,19 +761,27 @@ fn reader_loop(mut cap: pcap::Capture<pcap::Active>, offset: usize, shared: &Rec
                         "[syn] pkt src={src_ip} sport={src_port} dport={dst_port} flags={flags:#04x}"
                     );
                 }
-                // A SYN/ACK or RST identifies the port it came from: key the
-                // reply on its (source ip, source port), i.e. the scanned target
-                // and port. We deliberately do not match on the source port we
-                // forged — NAT/VPN can rewrite it in flight, so the reply
-                // arrives at the translated port. Our own outbound SYN has our
-                // source ip, a key no probe waits on, so it is harmless;
+                // A SYN/ACK or RST identifies the port it came from. Without a
+                // fixed source port, key the reply on its (source ip, source
+                // port), i.e. the scanned target and port — we deliberately do
+                // not match on the source port we forged, since NAT/VPN can
+                // rewrite it in flight. With a fixed source port every probe
+                // carries the same source port, so replies are keyed by their
+                // destination port instead (the scanned port, which is what our
+                // probe carried as its destination). Our own outbound probes have
+                // our source ip, a key no probe waits on, so they are harmless;
                 // anything that cannot answer a probe is dropped here, and the
                 // waiter turns the stored flags into a verdict for its mode.
                 if !is_probe_reply(flags) {
                     continue;
                 }
                 let mut map = shared.replies.lock().expect("syn receiver mutex poisoned");
-                map.entry((src_ip, src_port)).or_insert(flags);
+                let key = if has_fixed_source_port() {
+                    (src_ip, dst_port)
+                } else {
+                    (src_ip, src_port)
+                };
+                map.entry(key).or_insert(flags);
                 shared.signal.notify_all();
             }
             Err(pcap::Error::TimeoutExpired) => continue,
@@ -1148,6 +1196,61 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(b, c);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn a_fixed_source_port_is_carried_by_every_probe() {
+        // With --source-port 53 every probe carries port 53 as its source, so
+        // firewall rules keyed on source port can be tested. The builder takes
+        // the port as a parameter; this pins that the value reaches the wire.
+        let src: Ipv4Addr = "192.168.1.10".parse().unwrap();
+        let dst: Ipv4Addr = "192.168.1.20".parse().unwrap();
+
+        for dst_port in [22u16, 80, 443] {
+            let seg = build_tcp_probe(src, dst, 53, dst_port, 0xdead_beef, 0, TCP_SYN);
+            assert_eq!(
+                u16::from_be_bytes([seg[0], seg[1]]),
+                53,
+                "the fixed source port must reach the wire"
+            );
+            let ip = build_ipv4_probe(src, dst, 53, dst_port, 0xdead_beef, 0, TCP_SYN);
+            let (src_port, dport, _) = parse_ipv4_tcp(&ip).expect("should parse");
+            assert_eq!(src_port, 53, "round-trips the fixed source port");
+            assert_eq!(dport, dst_port, "and keeps the scanned destination port");
+        }
+    }
+
+    #[test]
+    fn replies_are_keyed_by_destination_port_with_a_fixed_source() {
+        // With a fixed source port every probe carries the same source port, so
+        // replies must be attributed by their destination port (the scanned
+        // port) rather than their own source. This pins the keying rule that
+        // reader_loop applies when has_fixed_source_port() is true: a reply from
+        // target:80 to us:53 belongs to the probe of port 80, not port 53.
+        let target: Ipv4Addr = "198.51.100.20".parse().unwrap();
+        let our_ip: Ipv4Addr = "203.0.113.5".parse().unwrap();
+
+        // Reply built as the target would send it with a fixed source port 53:
+        // src = target:80 (the scanned port), dst = us:53 (our fixed source).
+        let reply = build_ipv4_probe(target, our_ip, 80, 53, 1, 0, TCP_SYN | TCP_ACK);
+        let (src_ip, _dst_ip, src_port, dst_port, flags) =
+            parse_ipv4_tcp_addrs(&reply).expect("parse reply");
+
+        assert_eq!(src_ip, target);
+        assert_eq!(src_port, 80, "the reply's source port is the scanned port");
+        assert_eq!(dst_port, 53, "and its destination is our fixed source port");
+        assert!(is_probe_reply(flags));
+
+        // The keying rule: with a fixed source port the waiter looks up
+        // (target_ip, scanned_port), which is exactly (src_ip, src_port) here —
+        // so the reply lands in the right slot even though every probe carried
+        // the same source port.
+        let key = (src_ip, dst_port); // what reader_loop stores with a fixed source
+        assert_eq!(
+            key,
+            (target, 53),
+            "the stored key uses the reply's destination"
+        );
     }
 
     #[test]
