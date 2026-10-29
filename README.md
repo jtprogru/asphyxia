@@ -181,6 +181,7 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `--exclude-cdn` | For known CDN/WAF targets, scan only 80 and 443 instead of the full set |
 | `--nmap` | After the scan, run nmap on each host's open ports for a deep dive |
 | `--nmap-args <ARGS>` | Custom nmap arguments (replace the default `-sV -sC`); implies `--nmap` |
+| `--source-port <PORT>` | Fixed source port for raw TCP probes (raw modes only; ignored with a warning in connect/UDP scans) — useful for testing firewall rules keyed on source port |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-e, --interface <NAME>` (`--iface`) | Bind every probe to this network interface (e.g. `en0`), like `ssh -B` / `nmap -e` |
 | `-c, --concurrency <N>` | Maximum concurrent connection attempts (default: 256) |
@@ -233,6 +234,7 @@ Details and limitations:
 - **Correctness fallback** — a port that a SYN probe reports as *filtered* (no reply) is re-checked with a connect probe, so an open port is never missed if a reply is lost. Definitive open/closed SYN results are used directly.
 - **High-latency links** — a SYN probe waits up to `--timeout` for its reply. On slow paths (distant hosts, VPNs) a reply can arrive just after the deadline and the probe then falls back to a connect check (still correct, just not stealthy). Raise `--timeout` on such links so SYN replies land in time.
 - **Diagnostics** — set `ASPHYXIA_SYN_DEBUG=1` to print capture diagnostics to stderr (the chosen interface and datalink, each captured reply, and each probe's outcome), useful when a scan unexpectedly falls back.
+- **Fixed source port (`--source-port <PORT>`)** — every raw probe carries the given port as its TCP source, so firewall rules keyed on source port (e.g. an ACL allowing egress from 53/80/443) can be tested directly. Without it, each probe forges a distinct ephemeral source port per scanned port. With a fixed source port, replies are attributed by their destination port (the scanned port) rather than their own source, since every probe now carries the same source. The flag applies to raw scans only; in connect/UDP mode it is ignored with a warning.
 - `--syn` and `--udp` are mutually exclusive.
 
 #### ACK scan (`--scan ack`)
