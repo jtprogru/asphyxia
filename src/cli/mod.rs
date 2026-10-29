@@ -177,6 +177,9 @@ Examples:
   asphyxia ps -t example.com --all-ports --rate 1000
   asphyxia ps -t example.com --top-ports 1000 -T4
 
+  # Space probes out with a minimum delay and jitter (gentle on sensitive targets)
+  asphyxia ps -t example.com --top-ports 1000 --delay 250 --jitter 20
+
   # Emit machine-readable output for a pipeline (text | json | jsonl | csv | grep)
   asphyxia ps -t example.com -s 22,80,443 -o jsonl
   asphyxia as -s 10.0.0.0/24 -o json
@@ -335,6 +338,22 @@ pub enum Args {
         #[arg(long, value_name = "PPS")]
         rate: Option<u32>,
 
+        /// Minimum delay between probes to the same host, in milliseconds.
+        /// Combined with `--jitter`, each probe's interval is randomized within
+        /// ±PCT of this value (e.g. `--delay 250 --jitter 20` → 200–300 ms).
+        #[arg(long, value_name = "MS")]
+        delay: Option<u64>,
+
+        /// Jitter as a percentage (0–100) of `--delay`, randomizing each probe's
+        /// interval within ±PCT. Ignored without `--delay`.
+        #[arg(
+            long,
+            value_name = "PCT",
+            requires = "delay",
+            value_parser = clap::value_parser!(u32).range(0..=100)
+        )]
+        jitter: Option<u32>,
+
         /// Timing profile 0-5 (paranoid..insane) presetting timeout/concurrency/retries/rate
         #[arg(short = 'T', long = "timing", value_name = "0-5", value_parser = clap::value_parser!(u8).range(0..=5))]
         timing: Option<u8>,
@@ -470,6 +489,23 @@ impl Args {
     pub fn rate(&self) -> Option<u32> {
         match self {
             Args::PortScan { rate, .. } | Args::AddressScan { rate, .. } => *rate,
+        }
+    }
+
+    /// The minimum inter-probe delay in milliseconds, if requested. Applies to
+    /// port scans only (address scans have no per-probe pacing).
+    pub fn delay(&self) -> Option<u64> {
+        match self {
+            Args::PortScan { delay, .. } => *delay,
+            Args::AddressScan { .. } => None,
+        }
+    }
+
+    /// The jitter percentage (0–100) applied to `--delay`, if requested.
+    pub fn jitter(&self) -> Option<u32> {
+        match self {
+            Args::PortScan { jitter, .. } => *jitter,
+            Args::AddressScan { .. } => None,
         }
     }
 
@@ -642,6 +678,66 @@ mod tests {
             "lots",
         ]);
         assert!(parsed.is_err(), "--source-port must be numeric");
+    }
+
+    #[test]
+    fn delay_and_jitter_flags_are_accepted() {
+        let args = port_scan(&["--delay", "250", "--jitter", "20"]);
+        match args {
+            Args::PortScan { delay, jitter, .. } => {
+                assert_eq!(delay, Some(250));
+                assert_eq!(jitter, Some(20));
+            }
+            _ => panic!("expected PortScan"),
+        }
+    }
+
+    #[test]
+    fn jitter_requires_delay() {
+        // --jitter without --delay is a parse error (clap `requires`).
+        let parsed = Args::try_parse_from([
+            "asphyxia",
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "80",
+            "--jitter",
+            "20",
+        ]);
+        assert!(parsed.is_err(), "--jitter requires --delay");
+    }
+
+    #[test]
+    fn jitter_rejects_out_of_range() {
+        let parsed = Args::try_parse_from([
+            "asphyxia",
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "80",
+            "--delay",
+            "100",
+            "--jitter",
+            "150",
+        ]);
+        assert!(parsed.is_err(), "--jitter must be 0-100");
+    }
+
+    #[test]
+    fn delay_rejects_non_numeric() {
+        let parsed = Args::try_parse_from([
+            "asphyxia",
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "80",
+            "--delay",
+            "lots",
+        ]);
+        assert!(parsed.is_err(), "--delay must be numeric");
     }
 
     #[test]
