@@ -27,11 +27,13 @@ struct Finding {
     port: u16,
     latency: Duration,
     /// The observed state: `"open"` (TCP, or a UDP port that replied),
-    /// `"open|filtered"` (a silent UDP port), or `"unfiltered"`/`"filtered"`
-    /// from an ACK scan, which reports what a firewall let through rather than
-    /// whether anything is listening.
+    /// `"open|filtered"` (a silent UDP port, or a FIN/NULL/XMAS probe that drew
+    /// no RST — RFC 793's honest "cannot tell"), `"closed"` from the stealth
+    /// family, or `"unfiltered"`/`"filtered"` from an ACK scan, which reports
+    /// what a firewall let through rather than whether anything is listening.
     status: &'static str,
-    /// The probe that produced this result: `"connect"`, `"syn"` or `"ack"`.
+    /// The probe that produced this result: `"connect"`, `"syn"`, `"ack"`,
+    /// `"fin"`, `"null"` or `"xmas"`.
     /// Recorded per finding, not per scan, because a raw mode falls back to a
     /// connect probe for individual targets (IPv6) and ports (lost replies).
     scan: &'static str,
@@ -140,6 +142,7 @@ fn status_str(status: &str) -> &'static str {
         "open|filtered" => "open|filtered",
         "unfiltered" => "unfiltered",
         "filtered" => "filtered",
+        "closed" => "closed",
         _ => "open",
     }
 }
@@ -151,6 +154,9 @@ fn scan_str(scan: &str) -> &'static str {
     match scan {
         "syn" => "syn",
         "ack" => "ack",
+        "fin" => "fin",
+        "null" => "null",
+        "xmas" => "xmas",
         _ => "connect",
     }
 }
@@ -188,6 +194,48 @@ fn ack_probe(ip: Ipv4Addr, port: u16, timeout: Duration, retries: u32) -> Option
     })
 }
 
+/// Probe one port with a FIN/NULL/XMAS profile and report what RFC 793 says it
+/// means: an RST back is `closed`, silence is the honest `open|filtered` — an
+/// open port drops these unexpected segments just as surely as a filter does,
+/// so the two are never merged into a plain `open`.
+///
+/// Only silence is retried (a lost probe and an open/filtered one look alike),
+/// while a definitive RST is final. Returns `None` when the raw path is
+/// unusable, so the caller falls back to a connect probe.
+fn stealth_probe(
+    mode: syn::ProbeMode,
+    ip: Ipv4Addr,
+    port: u16,
+    timeout: Duration,
+    retries: u32,
+) -> Option<Finding> {
+    let start = Instant::now();
+    let mut outcome = None;
+    for _ in 0..=retries {
+        outcome = syn::probe_port(mode, ip, port, timeout);
+        if outcome != Some(syn::ProbeOutcome::Filtered) {
+            break;
+        }
+    }
+    let status = match outcome {
+        // A closed port answers with an RST; that is the only definitive state.
+        Some(syn::ProbeOutcome::Closed) => "closed",
+        // Silence: open or filtered, and we say exactly that.
+        Some(syn::ProbeOutcome::Filtered) => "open|filtered",
+        // FIN/NULL/XMAS never yield open/unfiltered; `None` means the raw path
+        // failed, and both leave the fallback to the caller.
+        Some(syn::ProbeOutcome::Open | syn::ProbeOutcome::Unfiltered) | None => return None,
+    };
+    Some(Finding {
+        port,
+        latency: start.elapsed(),
+        status,
+        scan: mode.label(),
+        service: None,
+        banner: None,
+    })
+}
+
 /// Probe a single `(ip, port)` job, returning a [`Finding`] when the result is
 /// reportable. A connect or SYN scan yields only open ports (optionally with a
 /// grabbed banner); UDP also yields open|filtered; an ACK scan yields every
@@ -196,7 +244,8 @@ fn ack_probe(ip: Ipv4Addr, port: u16, timeout: Duration, retries: u32) -> Option
 /// In [`ScanMode::Syn`] an IPv4 target is probed with a raw-socket SYN first: a
 /// definitive open/closed result is used directly, while a filtered/unavailable
 /// result falls through to a normal connect probe so nothing open is missed. In
-/// [`ScanMode::Ack`] the raw result stands on its own — a connect probe cannot
+/// [`ScanMode::Ack`], [`ScanMode::Fin`], [`ScanMode::Null`] and
+/// [`ScanMode::Xmas`] the raw result stands on its own — a connect probe cannot
 /// answer the same question — and only an unusable raw path falls through.
 ///
 /// An IPv6 target has no raw path at all and always falls through to a connect
@@ -231,6 +280,11 @@ fn scan_one(
         match probe {
             syn::ProbeMode::Ack => {
                 if let Some(finding) = ack_probe(v4, port, connect_timeout, retries) {
+                    return Some(finding);
+                }
+            }
+            syn::ProbeMode::Fin | syn::ProbeMode::Null | syn::ProbeMode::Xmas => {
+                if let Some(finding) = stealth_probe(probe, v4, port, connect_timeout, retries) {
                     return Some(finding);
                 }
             }
@@ -698,23 +752,32 @@ fn main() {
             }
 
             // Service detection only makes sense over a TCP stream to a port
-            // known to be open — which an ACK scan never establishes.
-            if service_detection && mode == ScanMode::Ack {
+            // known to be open — which an ACK or FIN/NULL/XMAS scan never
+            // establishes.
+            if service_detection && mode != ScanMode::Connect && mode != ScanMode::Syn {
                 eprintln!(
                     "{}",
-                    "--sV needs an open port, which an ACK scan does not determine — ignoring it"
-                        .yellow()
+                    format!(
+                        "--sV needs an open port, which a {} scan does not determine — ignoring it",
+                        mode.label().to_uppercase()
+                    )
+                    .yellow()
                 );
             }
             let detect_service = service_detection && !udp && mode != ScanMode::Ack;
 
-            // An ACK scan answers a different question than a connect or SYN
+            // Each raw mode answers a different question than a connect or SYN
             // scan over the same grid, so its checkpoints get their own key and
-            // the two can never resume from each other.
-            let state_proto = if mode == ScanMode::Ack {
-                "tcp-ack"
-            } else {
-                proto
+            // the two can never resume from each other. The key is computed from
+            // the *requested* mode: it must match what was asked for even when
+            // this run falls back to connect (a resumed FIN checkpoint belongs
+            // to a FIN scan, whatever probe actually ran).
+            let state_proto = match requested_mode {
+                ScanMode::Ack => "tcp-ack",
+                ScanMode::Fin => "tcp-fin",
+                ScanMode::Null => "tcp-null",
+                ScanMode::Xmas => "tcp-xmas",
+                _ => proto,
             };
 
             if format == OutputFormat::Text {
@@ -796,9 +859,9 @@ fn main() {
 
             match format {
                 OutputFormat::Text => {
-                    // An ACK scan lists firewall state for every probed port,
-                    // not a list of open ports, so it gets its own heading.
-                    let heading = if mode == ScanMode::Ack {
+                    // An ACK or FIN/NULL/XMAS scan lists a state for every probed
+                    // port, not a list of open ports, so it gets its own heading.
+                    let heading = if mode == ScanMode::Ack || mode.silent_means_open_filtered() {
                         "Port states"
                     } else {
                         "Opened ports"
@@ -835,7 +898,7 @@ fn main() {
                             }
                             println!("{}", line);
                         }
-                    } else if mode == ScanMode::Ack {
+                    } else if mode == ScanMode::Ack || mode.silent_means_open_filtered() {
                         println!("\n{}", "No port states observed 😕".yellow());
                     } else {
                         println!("\n{}", "No open ports found 😕".yellow());
@@ -863,14 +926,18 @@ fn main() {
                 }
             }
 
-            // Optional deep-dive: hand each host's open ports to nmap. An ACK
-            // scan finds no open ports, so there is nothing to hand over.
+            // Optional deep-dive: hand each host's open ports to nmap. An ACK or
+            // FIN/NULL/XMAS scan finds no definitive open ports, so there is
+            // nothing to hand over.
             if nmap {
-                if mode == ScanMode::Ack {
+                if mode == ScanMode::Ack || mode.silent_means_open_filtered() {
                     eprintln!(
                         "{}",
-                        "--nmap has nothing to hand off: an ACK scan does not determine open ports"
-                            .yellow()
+                        format!(
+                            "--nmap has nothing to hand off: a {} scan does not determine open ports",
+                            mode.label().to_uppercase()
+                        )
+                        .yellow()
                     );
                 } else {
                     let extra = nmap_args.as_deref().map(nmap::split_extra_args);

@@ -25,8 +25,9 @@ pub struct StateFinding {
     pub port: u16,
     pub latency_ms: u128,
     pub status: String,
-    /// The probe that produced this result (`"connect"`, `"syn"`, `"ack"`).
-    /// Older state files predate the field and are read back as `"connect"`.
+    /// The probe that produced this result (`"connect"`, `"syn"`, `"ack"`,
+    /// `"fin"`, `"null"`, `"xmas"`). Older state files predate the field and
+    /// are read back as `"connect"`.
     #[serde(default = "default_scan")]
     pub scan: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -38,10 +39,10 @@ pub struct StateFinding {
 /// The persisted state of an in-progress or completed scan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanState {
-    /// Transport and probe type of the scan (`"tcp"`, `"udp"`, `"tcp-ack"`) —
-    /// a resume must match. The ACK scan gets its own key because it answers a
-    /// different question, so its checkpoint must never be resumed as a
-    /// connect scan of the same grid, or vice versa.
+    /// Transport and probe type of the scan (`"tcp"`, `"udp"`, `"tcp-ack"`,
+    /// `"tcp-fin"`, `"tcp-null"`, `"tcp-xmas"`) — a resume must match. Each raw
+    /// mode gets its own key because it answers a different question, so one
+    /// mode's checkpoint must never be resumed as another scan of the same grid.
     pub proto: String,
     /// Resolved target IPs, in order; the order is part of the job identity.
     pub targets: Vec<String>,
@@ -214,6 +215,41 @@ mod tests {
             "done":[true],"findings":[{"host":0,"port":80,"latency_ms":2,"status":"open"}]}"#;
         let state: ScanState = serde_json::from_str(json).expect("legacy state should load");
         assert_eq!(state.findings[0].scan, "connect");
+    }
+
+    #[test]
+    fn stealth_checkpoints_are_not_resumable_as_other_modes() {
+        // Same targets and ports, different question: FIN/NULL/XMAS states must
+        // not mix with each other or with connect/ACK scans.
+        let fin = ScanState::new("tcp-fin", vec!["10.0.0.1".into()], vec![80], 1);
+        let targets = vec!["10.0.0.1".to_string()];
+        assert!(fin.is_compatible("tcp-fin", &targets, &[80], 1));
+        assert!(!fin.is_compatible("tcp", &targets, &[80], 1));
+        assert!(!fin.is_compatible("tcp-ack", &targets, &[80], 1));
+        assert!(!fin.is_compatible("tcp-null", &targets, &[80], 1));
+
+        let xmas = ScanState::new("tcp-xmas", vec!["10.0.0.1".into()], vec![80], 1);
+        assert!(!xmas.is_compatible("tcp-fin", &targets, &[80], 1));
+    }
+
+    #[test]
+    fn stealth_findings_round_trip_their_state_and_mode() {
+        let mut s = ScanState::new("tcp-null", vec!["10.0.0.1".into()], vec![80], 1);
+        s.complete(
+            0,
+            Some(StateFinding {
+                host: 0,
+                port: 80,
+                latency_ms: 3,
+                status: "open|filtered".into(),
+                scan: "null".into(),
+                service: None,
+                banner: None,
+            }),
+        );
+        let back: ScanState = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.findings[0].status, "open|filtered");
+        assert_eq!(back.findings[0].scan, "null");
     }
 
     #[test]

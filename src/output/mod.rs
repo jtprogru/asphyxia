@@ -55,14 +55,16 @@ pub struct ScanRecord {
     pub port: Option<u16>,
     /// Transport protocol of the probe.
     pub proto: &'static str,
-    /// The probe that produced this record: `"connect"`, `"syn"` or `"ack"`.
-    /// It is per record, not per scan, because a raw mode can fall back to a
-    /// connect probe for an individual target or port.
+    /// The probe that produced this record: `"connect"`, `"syn"`, `"ack"`,
+    /// `"fin"`, `"null"` or `"xmas"`. It is per record, not per scan, because a
+    /// raw mode can fall back to a connect probe for an individual target or port.
     pub scan: &'static str,
     /// Wall-clock latency of the probe, in milliseconds.
     pub latency_ms: u128,
-    /// The observed state: `"open"` or `"open|filtered"` for a port scan,
-    /// `"unfiltered"`/`"filtered"` for an ACK scan, `"up"` for an available host.
+    /// The observed state: `"open"` or `"open|filtered"` for a port scan (the
+    /// latter also from FIN/NULL/XMAS silence), `"closed"` from the stealth
+    /// family, `"unfiltered"`/`"filtered"` for an ACK scan, `"up"` for an
+    /// available host.
     pub status: &'static str,
     /// Detected service (from `--sV`), omitted when unknown or not requested.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -275,6 +277,60 @@ mod tests {
 
         let grep = render(&records, OutputFormat::Grep);
         assert!(grep.contains("192.0.2.10\t22\ttcp\tack\tunfiltered\t4\n"));
+    }
+
+    #[test]
+    fn stealth_records_carry_their_mode_and_rfc793_states() {
+        // FIN/NULL/XMAS report closed or open|filtered — never a bare "open" —
+        // and the scan column names which profile produced each state.
+        let records = vec![
+            ScanRecord {
+                ip: "192.0.2.10".to_string(),
+                port: Some(22),
+                proto: "tcp",
+                scan: "fin",
+                latency_ms: 4,
+                status: "closed",
+                service: None,
+                banner: None,
+            },
+            ScanRecord {
+                ip: "192.0.2.10".to_string(),
+                port: Some(23),
+                proto: "tcp",
+                scan: "null",
+                latency_ms: 2000,
+                status: "open|filtered",
+                service: None,
+                banner: None,
+            },
+            ScanRecord {
+                ip: "192.0.2.10".to_string(),
+                port: Some(24),
+                proto: "tcp",
+                scan: "xmas",
+                latency_ms: 2000,
+                status: "open|filtered",
+                service: None,
+                banner: None,
+            },
+        ];
+        let csv = render(&records, OutputFormat::Csv);
+        assert!(csv.contains("192.0.2.10,22,tcp,fin,closed,4\n"));
+        assert!(csv.contains("192.0.2.10,23,tcp,null,open|filtered,2000\n"));
+        assert!(csv.contains("192.0.2.10,24,tcp,xmas,open|filtered,2000\n"));
+
+        let json = render(&records, OutputFormat::Json);
+        for scan in ["fin", "null", "xmas"] {
+            assert!(json.contains(&format!("\"scan\":\"{scan}\"")));
+        }
+        assert!(json.contains("\"status\":\"closed\""));
+        assert!(json.contains("\"status\":\"open|filtered\""));
+        // open|filtered must stay distinguishable from a plain open.
+        assert!(!json.contains("\"status\":\"open\""));
+
+        let grep = render(&records, OutputFormat::Grep);
+        assert!(grep.contains("192.0.2.10\t22\ttcp\tfin\tclosed\t4\n"));
     }
 
     #[test]
