@@ -339,6 +339,12 @@ pub enum Args {
         #[arg(short = 'T', long = "timing", value_name = "0-5", value_parser = clap::value_parser!(u8).range(0..=5))]
         timing: Option<u8>,
 
+        /// Fixed source port for raw TCP probes (raw modes only; ignored with a
+        /// warning in connect/UDP scans) — useful for testing firewall rules
+        /// keyed on source port.
+        #[arg(long, value_name = "PORT")]
+        source_port: Option<u16>,
+
         /// Output format
         #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
@@ -610,6 +616,32 @@ mod tests {
                 "{mode:?}: {message}"
             );
         }
+    }
+
+    #[test]
+    fn source_port_flag_is_accepted() {
+        // The flag parses and carries a valid port; it applies to raw scans only,
+        // but must not reject a connect/UDP scan at parse time.
+        let args = port_scan(&["--source-port", "53"]);
+        match args {
+            Args::PortScan { source_port, .. } => assert_eq!(source_port, Some(53)),
+            _ => panic!("expected PortScan"),
+        }
+    }
+
+    #[test]
+    fn source_port_flag_rejects_non_numeric() {
+        let parsed = Args::try_parse_from([
+            "asphyxia",
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "80",
+            "--source-port",
+            "lots",
+        ]);
+        assert!(parsed.is_err(), "--source-port must be numeric");
     }
 
     #[test]
