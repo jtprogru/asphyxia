@@ -1,5 +1,5 @@
-//! Raw-packet TCP probing: SYN / stealth scanning (`--syn`) and ACK scanning
-//! (`--scan ack`).
+//! Raw-packet TCP probing: SYN / stealth scanning (`--syn`), ACK scanning
+//! (`--scan ack`) and the FIN/NULL/XMAS family (`--scan fin|null|xmas`).
 //!
 //! A SYN scan sends a lone TCP SYN and never completes the handshake: a SYN/ACK
 //! reply means the port is open (we answer with an RST instead of an ACK), an RST
@@ -12,6 +12,12 @@
 //! nothing about the service behind it — only that the probe got through, i.e.
 //! the port is `unfiltered`. Silence means a filtering device swallowed the
 //! probe (`filtered`). It maps the firewall, not the services.
+//!
+//! FIN/NULL/XMAS probes carry no SYN at all: per RFC 793 a closed port answers
+//! any unexpected segment with an RST while an open port drops it silently, so
+//! an RST means `closed` and silence means `open|filtered`. They are the most
+//! stealthy of the family — a NULL probe (no flags set) is invisible to many
+//! stateful filters that key on SYN.
 //!
 //! Both share one packet path: [`ProbeMode`] picks the flag profile that goes
 //! out and the rules that read the reply, so another mode is another profile
@@ -48,7 +54,9 @@ use std::time::{Duration, Instant};
 pub const TCP_FIN: u8 = 0x01;
 pub const TCP_SYN: u8 = 0x02;
 pub const TCP_RST: u8 = 0x04;
+pub const TCP_PSH: u8 = 0x08;
 pub const TCP_ACK: u8 = 0x10;
+pub const TCP_URG: u8 = 0x20;
 
 /// Length of a TCP header with no options.
 const TCP_HEADER_LEN: usize = 20;
@@ -59,12 +67,14 @@ const IPPROTO_TCP: u8 = 6;
 
 /// How a raw probe's reply is interpreted. Which variants a scan can produce
 /// depends on its [`ProbeMode`]: a SYN probe decides open/closed/filtered, an
-/// ACK probe decides unfiltered/filtered and never claims open or closed.
+/// ACK probe decides unfiltered/filtered and never claims open or closed, and
+/// the FIN/NULL/XMAS probes decide closed/open|filtered — silence there is not
+/// `open`, it is the honest `open|filtered`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeOutcome {
     /// SYN/ACK — the port is open. SYN mode only.
     Open,
-    /// RST to a SYN — the port is closed. SYN mode only.
+    /// RST to a SYN or FIN/NULL/XMAS probe — the port is closed.
     Closed,
     /// RST to an ACK — the probe reached the port, so nothing filtered it. It
     /// says nothing about open/closed. ACK mode only.
@@ -85,6 +95,13 @@ pub enum ProbeMode {
     /// silence means something dropped it (`filtered`). It cannot tell open
     /// from closed — both answer a stray ACK with an RST.
     Ack,
+    /// FIN only: per RFC 793 a closed port answers with an RST, an open one
+    /// drops the unexpected segment silently (`open|filtered`).
+    Fin,
+    /// No flags set at all (a "NULL" probe): same reply rules as [`ProbeMode::Fin`].
+    Null,
+    /// FIN + PSH + URG ("XMAS"): same reply rules as [`ProbeMode::Fin`].
+    Xmas,
 }
 
 impl ProbeMode {
@@ -93,6 +110,9 @@ impl ProbeMode {
         match self {
             ProbeMode::Syn => TCP_SYN,
             ProbeMode::Ack => TCP_ACK,
+            ProbeMode::Fin => TCP_FIN,
+            ProbeMode::Null => 0,
+            ProbeMode::Xmas => TCP_FIN | TCP_PSH | TCP_URG,
         }
     }
 
@@ -101,7 +121,16 @@ impl ProbeMode {
         match self {
             ProbeMode::Syn => "syn",
             ProbeMode::Ack => "ack",
+            ProbeMode::Fin => "fin",
+            ProbeMode::Null => "null",
+            ProbeMode::Xmas => "xmas",
         }
+    }
+
+    /// Whether this mode's silence is the honest `open|filtered` (FIN/NULL/XMAS)
+    /// rather than a plain `filtered` verdict.
+    pub fn silent_means_open_filtered(self) -> bool {
+        matches!(self, ProbeMode::Fin | ProbeMode::Null | ProbeMode::Xmas)
     }
 }
 
@@ -120,13 +149,22 @@ pub fn classify_flags(flags: u8) -> ProbeOutcome {
 /// Classify a reply's flag byte the way `mode` requires.
 ///
 /// The same RST means different things per mode: to a SYN it says the port is
-/// closed, to an ACK it says only that the probe was not filtered on the way in.
+/// closed, to an ACK it says only that the probe was not filtered on the way in,
+/// and to FIN/NULL/XMAS it again says closed — while silence there (the
+/// [`ProbeOutcome::Filtered`] returned by the receiver when nothing arrives) is
+/// reported as `open|filtered`, never merged into a plain `open`.
 pub fn classify_reply(mode: ProbeMode, flags: u8) -> ProbeOutcome {
     match mode {
         ProbeMode::Syn => classify_flags(flags),
-        ProbeMode::Ack => {
+        ProbeMode::Ack | ProbeMode::Fin | ProbeMode::Null | ProbeMode::Xmas => {
             if flags & TCP_RST != 0 {
-                ProbeOutcome::Unfiltered
+                // An RST to an ACK proves the probe was not filtered; an RST to a
+                // FIN/NULL/XMAS probe is RFC 793's "closed" answer.
+                if mode == ProbeMode::Ack {
+                    ProbeOutcome::Unfiltered
+                } else {
+                    ProbeOutcome::Closed
+                }
             } else {
                 ProbeOutcome::Filtered
             }
@@ -351,8 +389,9 @@ pub fn syn_scan_port(dst: Ipv4Addr, dst_port: u16, timeout: Duration) -> Option<
 ///
 /// In [`ProbeMode::Syn`] a SYN/ACK is [`ProbeOutcome::Open`], an RST is
 /// [`ProbeOutcome::Closed`]. In [`ProbeMode::Ack`] an RST is
-/// [`ProbeOutcome::Unfiltered`]. In either mode no reply within `timeout` is
-/// [`ProbeOutcome::Filtered`].
+/// [`ProbeOutcome::Unfiltered`]. In FIN/NULL/XMAS an RST is
+/// [`ProbeOutcome::Closed`] and the caller reports silence as `open|filtered`.
+/// In every mode no reply within `timeout` is [`ProbeOutcome::Filtered`].
 ///
 /// Returns `None` when the raw scan cannot run — the receiver was never
 /// installed (no [`init_receiver`], or it failed), a raw socket cannot be
@@ -732,8 +771,45 @@ mod tests {
     fn probe_modes_carry_their_own_flag_profile() {
         assert_eq!(ProbeMode::Syn.flags(), TCP_SYN);
         assert_eq!(ProbeMode::Ack.flags(), TCP_ACK);
+        assert_eq!(ProbeMode::Fin.flags(), TCP_FIN);
+        // A NULL probe sets no flags at all — that is the point of it.
+        assert_eq!(ProbeMode::Null.flags(), 0);
+        assert_eq!(ProbeMode::Xmas.flags(), TCP_FIN | TCP_PSH | TCP_URG);
+    }
+
+    #[test]
+    fn every_mode_has_a_stable_label() {
         assert_eq!(ProbeMode::Syn.label(), "syn");
         assert_eq!(ProbeMode::Ack.label(), "ack");
+        assert_eq!(ProbeMode::Fin.label(), "fin");
+        assert_eq!(ProbeMode::Null.label(), "null");
+        assert_eq!(ProbeMode::Xmas.label(), "xmas");
+    }
+
+    #[test]
+    fn fin_null_and_xmas_probes_reach_the_wire_with_their_flags() {
+        let src: Ipv4Addr = "192.168.1.10".parse().unwrap();
+        let dst: Ipv4Addr = "192.168.1.20".parse().unwrap();
+
+        for mode in [ProbeMode::Fin, ProbeMode::Null, ProbeMode::Xmas] {
+            let seg = build_tcp_probe(src, dst, 50000, 443, 0xdead_beef, 0, mode.flags());
+            assert_eq!(seg.len(), TCP_HEADER_LEN);
+            assert_eq!(seg[13], mode.flags(), "{mode:?} must carry its own profile");
+            // None of the family may ever set SYN — that is what makes them
+            // stealthier than a half-open scan.
+            assert_eq!(seg[13] & TCP_SYN, 0, "{mode:?} must not carry a SYN");
+            assert!(tcp_checksum_verifies(src, dst, &seg), "{mode:?} checksum");
+
+            let ip = build_ipv4_probe(src, dst, 50000, 443, 0xdead_beef, 0, mode.flags());
+            assert_eq!(checksum(&ip[..IPV4_HEADER_LEN]), 0, "{mode:?} ip header");
+            let (_, _, flags) = parse_ipv4_tcp(&ip).expect("should parse");
+            assert_eq!(flags, mode.flags(), "{mode:?} round-trips its profile");
+        }
+
+        // XMAS is the only one of the three that sets more than a single bit.
+        assert_eq!(ProbeMode::Fin.flags().count_ones(), 1);
+        assert_eq!(ProbeMode::Null.flags().count_ones(), 0);
+        assert_eq!(ProbeMode::Xmas.flags().count_ones(), 3);
     }
 
     #[test]
@@ -834,6 +910,43 @@ mod tests {
         for flags in 0u8..=u8::MAX {
             assert_eq!(classify_reply(ProbeMode::Syn, flags), classify_flags(flags));
         }
+    }
+
+    #[test]
+    fn an_rst_means_closed_to_fin_null_and_xmas_probes() {
+        // RFC 793: a closed port answers any unexpected segment with an RST.
+        for mode in [ProbeMode::Fin, ProbeMode::Null, ProbeMode::Xmas] {
+            assert_eq!(classify_reply(mode, TCP_RST), ProbeOutcome::Closed);
+            assert_eq!(
+                classify_reply(mode, TCP_RST | TCP_ACK),
+                ProbeOutcome::Closed
+            );
+        }
+    }
+
+    #[test]
+    fn fin_null_and_xmas_never_claim_open_or_unfiltered() {
+        // Whatever comes back, these probes only ever report closed or
+        // filtered (silence, reported as open|filtered by the caller) — they
+        // cannot tell a listening port from one that drops the probe.
+        for mode in [ProbeMode::Fin, ProbeMode::Null, ProbeMode::Xmas] {
+            for flags in 0u8..=u8::MAX {
+                let outcome = classify_reply(mode, flags);
+                assert!(
+                    matches!(outcome, ProbeOutcome::Closed | ProbeOutcome::Filtered),
+                    "{mode:?} with flags {flags:#04x} produced {outcome:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fin_null_and_xmas_share_the_silent_means_open_filtered_rule() {
+        for mode in [ProbeMode::Fin, ProbeMode::Null, ProbeMode::Xmas] {
+            assert!(mode.silent_means_open_filtered());
+        }
+        assert!(!ProbeMode::Syn.silent_means_open_filtered());
+        assert!(!ProbeMode::Ack.silent_means_open_filtered());
     }
 
     #[test]
