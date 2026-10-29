@@ -666,6 +666,114 @@ fn stealth_scans_reject_a_udp_pairing() {
 }
 
 #[test]
+fn source_port_flag_runs_or_falls_back_cleanly() {
+    // With --source-port 53 the raw probes carry port 53 as their source. On a
+    // closed loopback port this draws an RST (closed) or, without privileges,
+    // falls back to connect (refused → closed). Either way the run succeeds and
+    // no result claims "open".
+    let assertion = asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--syn",
+            "--source-port",
+            "53",
+            "--timeout",
+            "300",
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).into_owned();
+    assert!(
+        !stdout.contains("\"status\":\"open\""),
+        "a closed port must not be reported open: {stdout}"
+    );
+}
+
+#[test]
+fn source_port_flag_is_ignored_with_a_warning_in_connect_mode() {
+    // --source-port only applies to raw scans. In a connect scan it has no
+    // effect, so the operator is told rather than silently ignored.
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--source-port",
+            "53",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("--source-port"))
+        .stdout(predicate::eq("[]\n"));
+}
+
+#[test]
+fn source_port_flag_is_ignored_with_a_warning_in_udp_mode() {
+    // Same for UDP: the flag is raw-scan-only, so it warns and proceeds.
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--udp",
+            "--source-port",
+            "53",
+            "--timeout",
+            "300",
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("--source-port"));
+}
+
+#[test]
+fn source_port_flag_applies_the_rate_limit_too() {
+    // The shared rate gate must pace raw probes with a fixed source port exactly
+    // as it paces them without one.
+    use std::time::Instant;
+    let start = Instant::now();
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1,2,3,4,5",
+            "--syn",
+            "--source-port",
+            "53",
+            "--rate",
+            "20",
+            "--timeout",
+            "300",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success();
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_millis(150),
+        "the rate limit should pace fixed-source-port probes, took {:?}",
+        elapsed
+    );
+}
+
+#[test]
 fn stealth_scans_apply_the_rate_limit_too() {
     // The shared rate gate must pace FIN/NULL/XMAS probes exactly as it paces
     // connect ones: five closed ports at 20/sec span ~200ms of pacing.
