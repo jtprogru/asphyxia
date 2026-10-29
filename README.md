@@ -119,8 +119,11 @@ asphyxia ps -t example.com --all-ports
 asphyxia ps -t example.com --top-ports 100
 asphyxia ps -t example.com --top-ports 1000
 
-# Scan UDP ports instead of TCP (DNS, NTP, SNMP, …)
+# Scan UDP ports instead of TCP (DNS, NTP, SNMP, …) — service probes elicit real replies
 asphyxia ps -t example.com -s 53,123,161 --udp
+
+# Probe a specific UDP service with its protocol payload (DNS query, NTP request, SNMP GET)
+asphyxia ps -t resolver.example.com -s 53 --udp --retries 1
 
 # SYN/stealth scan via raw sockets (needs root/CAP_NET_RAW)
 sudo asphyxia ps -t example.com --top-ports 1000 --syn
@@ -288,6 +291,40 @@ Details and limitations:
 - **Checkpoints are not interchangeable** — a `--resume` state from a FIN scan is keyed `tcp-fin`, distinct from `tcp-null`, `tcp-xmas`, `tcp-ack` and plain `tcp`; one mode's checkpoint is never resumed as another scan of the same grid.
 - **Windows caveat (documented, not guessed)** — some Windows stacks answer an RST to these probes even on *open* ports; if you see a wall of `closed` against a Windows host that connect-scan says has open ports, that is likely why. Asphyxia reports what the wire said and does not second-guess it.
 - `--scan fin|null|xmas` are mutually exclusive with `--udp` and `--syn`.
+
+#### UDP service probes (`--udp`)
+
+A bare empty datagram rarely elicits a reply, so most UDP ports look `open|filtered`. Asphyxia sends protocol-specific payloads for well-known services to coax a real answer:
+
+- **DNS/53** — a standard query for the root NS record (RD set).
+- **NTP/123** — a 48-byte client request (LI=0, VN=3, mode=3).
+- **SNMP/161** — a GET request for `systemDescription` with the default `public` community.
+- **NetBIOS/137** — a node status query (0x21) for the null name.
+- **mDNS/5353** — a PTR query for `_http._tcp.local.`.
+
+Other ports get an empty datagram, which is enough to trigger an ICMP unreachable from a closed port. Classification:
+
+- **`open`** — the service replied (a fact).
+- **`closed`** — ICMP port-unreachable (type 3, code 3) came back; the host has no service on that port.
+- **`filtered`** — an administrative ICMP unreachable (type 3 codes 1/2/9/10/13); a device dropped the probe, so the port state behind it is unknown.
+- **`open|filtered`** — silence after all retries; a conclusion, not a fact.
+
+```bash
+asphyxia ps -t resolver.example.com -s 53 --udp --retries 1
+# {"ip":"93.184.216.34","port":53,"proto":"udp","scan":"connect","latency_ms":12,"status":"open"}
+
+asphyxia ps -t example.com -s 1,9 --udp -o jsonl
+# {"ip":"93.184.216.34","port":1,"proto":"udp","scan":"connect","latency_ms":0,"status":"closed"}
+# {"ip":"93.184.216.34","port":9,"proto":"udp","scan":"connect","latency_ms":2000,"status":"open|filtered"}
+```
+
+Details and limitations:
+
+- **Every probed port is reported**, like an ACK scan: silence *is* the finding, so `open|filtered` ports are results too. Keep the port set narrow (`--top-ports`, `-s`) — a silent port waits out the full `--timeout`.
+- **ICMP rate-limiting (RFC 1812)** — many hosts cap their ICMP reply rate, so a lost unreachable can make a closed port look `open|filtered`. `--retries` re-probes silence only; refusals are final and never retried.
+- **No raw sockets needed** — UDP probes run over plain UDP sockets (no root/`CAP_NET_RAW`), with ICMP unreachables surfaced by the kernel as socket errors. The pcap receiver is not involved in UDP scanning.
+- **`--sV` does nothing here** and says so: it needs a TCP stream, which UDP has no equivalent of. `--nmap` hands off open ports to nmap for a deep dive (`-sU -sV`).
+- **Checkpoints are keyed `udp`**, distinct from the TCP modes; one mode's checkpoint is never resumed as another scan of the same grid.
 
 #### Selecting the outgoing interface (`-e`/`--interface`)
 
