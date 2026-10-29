@@ -16,6 +16,13 @@ pub enum ScanMode {
     /// Lone ACK over a raw socket: unfiltered or filtered. It maps what a
     /// firewall lets through, and never claims a port is open or closed.
     Ack,
+    /// FIN only (RFC 793): an RST means closed, silence means open|filtered.
+    Fin,
+    /// No flags set at all: same reply rules as [`ScanMode::Fin`], invisible to
+    /// filters that key on SYN or ACK.
+    Null,
+    /// FIN + PSH + URG ("XMAS"): same reply rules as [`ScanMode::Fin`].
+    Xmas,
 }
 
 /// Why a raw-packet scan mode cannot run, so the scan falls back to connect.
@@ -36,7 +43,17 @@ impl ScanMode {
             ScanMode::Connect => None,
             ScanMode::Syn => Some(ProbeMode::Syn),
             ScanMode::Ack => Some(ProbeMode::Ack),
+            ScanMode::Fin => Some(ProbeMode::Fin),
+            ScanMode::Null => Some(ProbeMode::Null),
+            ScanMode::Xmas => Some(ProbeMode::Xmas),
         }
+    }
+
+    /// Whether this mode reports silence as `open|filtered` (FIN/NULL/XMAS)
+    /// rather than a plain verdict.
+    pub fn silent_means_open_filtered(self) -> bool {
+        self.probe_mode()
+            .is_some_and(ProbeMode::silent_means_open_filtered)
     }
 
     /// Whether this mode needs a raw socket and a packet capture to run.
@@ -56,9 +73,9 @@ impl ScanMode {
     /// saying which mode was dropped and why.
     ///
     /// Falling back is not a silent equivalence: a connect scan answers a
-    /// different question (open/closed) than an ACK scan (unfiltered/filtered),
-    /// so the operator has to be told, and every result carries the mode that
-    /// actually produced it.
+    /// different question (open/closed) than an ACK scan (unfiltered/filtered)
+    /// or a FIN/NULL/XMAS scan (closed/open|filtered), so the operator has to be
+    /// told, and every result carries the mode that actually produced it.
     pub fn downgrade(self, cause: Unavailable) -> (ScanMode, String) {
         let reason = match cause {
             Unavailable::RawSocket => "needs root/CAP_NET_RAW",
@@ -261,7 +278,8 @@ pub enum Args {
         #[arg(long = "syn", conflicts_with_all = ["udp", "scan"])]
         syn: bool,
 
-        /// Probe type: connect (default), syn (half-open), or ack (firewall state)
+        /// Probe type: connect (default), syn (half-open), ack (firewall state),
+        /// or fin/null/xmas (stealth; closed or open|filtered)
         #[arg(
             long = "scan",
             value_name = "MODE",
@@ -487,6 +505,9 @@ mod tests {
     fn scan_flag_selects_the_probe_type() {
         assert_eq!(port_scan(&["--scan", "ack"]).scan_mode(), ScanMode::Ack);
         assert_eq!(port_scan(&["--scan", "syn"]).scan_mode(), ScanMode::Syn);
+        assert_eq!(port_scan(&["--scan", "fin"]).scan_mode(), ScanMode::Fin);
+        assert_eq!(port_scan(&["--scan", "null"]).scan_mode(), ScanMode::Null);
+        assert_eq!(port_scan(&["--scan", "xmas"]).scan_mode(), ScanMode::Xmas);
         assert_eq!(
             port_scan(&["--scan", "connect"]).scan_mode(),
             ScanMode::Connect
@@ -540,8 +561,18 @@ mod tests {
     fn raw_modes_map_to_their_packet_profiles() {
         assert_eq!(ScanMode::Syn.probe_mode(), Some(ProbeMode::Syn));
         assert_eq!(ScanMode::Ack.probe_mode(), Some(ProbeMode::Ack));
-        assert!(ScanMode::Syn.needs_raw());
-        assert!(ScanMode::Ack.needs_raw());
+        assert_eq!(ScanMode::Fin.probe_mode(), Some(ProbeMode::Fin));
+        assert_eq!(ScanMode::Null.probe_mode(), Some(ProbeMode::Null));
+        assert_eq!(ScanMode::Xmas.probe_mode(), Some(ProbeMode::Xmas));
+        for mode in [
+            ScanMode::Syn,
+            ScanMode::Ack,
+            ScanMode::Fin,
+            ScanMode::Null,
+            ScanMode::Xmas,
+        ] {
+            assert!(mode.needs_raw());
+        }
     }
 
     #[test]
@@ -549,6 +580,36 @@ mod tests {
         assert_eq!(ScanMode::Connect.label(), "connect");
         assert_eq!(ScanMode::Syn.label(), "syn");
         assert_eq!(ScanMode::Ack.label(), "ack");
+        assert_eq!(ScanMode::Fin.label(), "fin");
+        assert_eq!(ScanMode::Null.label(), "null");
+        assert_eq!(ScanMode::Xmas.label(), "xmas");
+    }
+
+    #[test]
+    fn only_the_stealth_modes_report_silence_as_open_filtered() {
+        for mode in [ScanMode::Fin, ScanMode::Null, ScanMode::Xmas] {
+            assert!(mode.silent_means_open_filtered());
+        }
+        for mode in [ScanMode::Connect, ScanMode::Syn, ScanMode::Ack] {
+            assert!(!mode.silent_means_open_filtered());
+        }
+    }
+
+    #[test]
+    fn stealth_downgrades_land_on_connect_and_name_their_mode() {
+        for (mode, name) in [
+            (ScanMode::Fin, "FIN"),
+            (ScanMode::Null, "NULL"),
+            (ScanMode::Xmas, "XMAS"),
+        ] {
+            let (fallback, message) = mode.downgrade(Unavailable::Ipv6);
+            assert_eq!(fallback, ScanMode::Connect);
+            assert!(message.contains(name), "{mode:?}: {message}");
+            assert!(
+                message.contains("falling back to connect scan"),
+                "{mode:?}: {message}"
+            );
+        }
     }
 
     #[test]
