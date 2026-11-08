@@ -329,7 +329,7 @@ fn port_scan_csv_emits_header_even_with_no_open_ports() {
         .assert()
         .success()
         .stdout(predicate::eq(
-            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence\n",
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence,asn,asn_org,cloud\n",
         ));
 }
 
@@ -415,7 +415,7 @@ fn config_supplies_defaults_that_flags_override() {
         .assert()
         .success()
         .stdout(predicate::eq(
-            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence\n",
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence,asn,asn_org,cloud\n",
         ));
 
     let _ = std::fs::remove_file(&path);
@@ -1428,7 +1428,7 @@ fn output_file_writes_machine_output_and_keeps_stdout_clean() {
 
     let contents = std::fs::read_to_string(&path).expect("output file should exist");
     assert!(contents.starts_with(
-        "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence\n"
+        "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence,asn,asn_org,cloud\n"
     ));
     let _ = std::fs::remove_file(&path);
 }
@@ -1683,6 +1683,32 @@ fn discovery_auto_rejects_explicit_probes() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("cannot be combined"));
+}
+
+#[test]
+fn asn_uses_the_bundled_table_without_network() {
+    // --Pn makes this hermetic: no probe is sent, and the ASN lookup is local.
+    asphyxia()
+        .args(["as", "-t", "104.16.0.1", "--Pn", "--asn", "-o", "jsonl"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"asn\":13335"))
+        .stdout(predicate::str::contains("\"cloud\":\"cloudflare\""))
+        .stdout(predicate::str::contains("Cloudflare, Inc."));
+    asphyxia()
+        .args(["as", "-t", "192.0.2.1", "--Pn", "--asn", "-o", "jsonl"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"asn\"").not());
+}
+
+#[test]
+fn asn_is_documented_in_help() {
+    asphyxia()
+        .args(["as", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--asn"));
 }
 
 #[test]

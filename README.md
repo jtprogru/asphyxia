@@ -27,6 +27,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Combined discovery** — `--discovery arp,icmp,tcp` tries several probes per host (or `auto` for ARP → ICMP → TCP), names the probe that confirmed each host, and degrades unavailable probes to warnings instead of failing the scan.
 - **Reverse DNS / PTR** — `as --resolve-ptr` adds a PTR name and a separate forward-confirmed verdict for each live host, with a bounded lookup that never fails the base scan.
 - **Device classification** — `--classify` labels an asset (`windows`, `printer`, `hypervisor`, `network-device`, `web-server`, or `unknown`) with a confidence, using only ports/banners already collected and the ARP OUI; it never probes again.
+- **Offline ASN / cloud hints** — `--asn` adds `asn`, `asn_org` and `cloud` from a bundled prefix table, with no DNS or API requests and no target IP leaving the machine.
 - **Chainable scans** — pipe the hosts an address scan discovers straight into a port scan with `--stdin`, turning host discovery and port scanning into a single pipeline.
 - **IPv4 and IPv6** — connect and UDP scans accept both address families; raw TCP and ARP modes are IPv4-only and fall back visibly for IPv6.
 - **Configurable timeout** — tune the per-connection timeout with `--timeout`.
@@ -180,6 +181,7 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `--scan <MODE>` | Probe type: `connect` (default), `syn`, `ack` (firewall state), or `fin`/`null`/`xmas` (stealth; closed or open\|filtered). Raw modes need root, else fall back to connect |
 | `--sV` (`--banner`) | Grab banners and identify the service on each open TCP port |
 | `--classify` | Infer a coarse device type and confidence from already-collected ports/banners (no new probes) |
+| `--asn` | Add offline `asn`, `asn_org` and `cloud` hints from the bundled prefix table; no network requests |
 | `--resume <PATH>` | Checkpoint progress to a file and resume from it if it already exists |
 | `--top-ports <N>` | Scan the `N` most common TCP ports (frequency-ordered, up to 1000) |
 | `--ports <NAME>` | Scan a named port set: `web`, `mail`, `db`, `remote`, `windows` |
@@ -407,6 +409,9 @@ asphyxia as -s 192.168.1.0/24 --resolve-ptr -o jsonl
 asphyxia ps -t example.com --top-ports 1000 --sV --classify
 asphyxia as -s 192.168.1.0/24 --discovery arp --classify -o jsonl
 
+# Add offline ASN/cloud hints (bundled table; no network requests)
+asphyxia as -s 192.168.1.0/24 --Pn --asn -o jsonl
+
 # Skip discovery and treat every address as up (like nmap -Pn)
 asphyxia as -s 192.168.1.0/24 --Pn -o jsonl | asphyxia ps --stdin --top-ports 100
 
@@ -426,6 +431,7 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 | `--show-down` | With `--discovery icmp`, also emit hosts that did not answer (`status: "down"`, `reason: "unreachable"` or `"no-response"`) instead of listing only live hosts. |
 | `--resolve-ptr` | Enrich live hosts with a reverse-DNS PTR name and a separate forward-confirmed verdict (`ptr`, `ptr_confirmed`). Lookups are optional and bounded by the per-host timeout. |
 | `--classify` | Infer a coarse device type and confidence from already-collected ports/banners/OUI (no new probes) |
+| `--asn` | Add offline `asn`, `asn_org` and `cloud` hints from the bundled prefix table; no network requests |
 | `--exclude <SPEC>` | Exclude hosts/CIDRs from the scan (repeatable; each value may be comma-separated) |
 | `--exclude-file <PATH>` | Exclude hosts/CIDRs listed in a file (one per line; `#` comments allowed) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
@@ -533,9 +539,23 @@ asphyxia as -s 192.168.1.0/24 --discovery arp --classify -o jsonl
 - **Signals only** — a state like ACK `unfiltered` or FIN `open|filtered` is not treated as an open port, so those records classify as `unknown`.
 - **Opt-in** — without `--classify` no classification fields are emitted.
 
+#### Offline ASN / cloud hints (`--asn`)
+
+`--asn` adds a coarse ownership hint to an address: its autonomous system number, organisation and, for known clouds/CDNs, a short provider name.
+
+```bash
+asphyxia as -s 192.168.1.0/24 --Pn --asn -o jsonl
+# {"ip":"104.16.0.1","proto":"tcp","scan":"none","status":"up","asn":13335,"asn_org":"Cloudflare, Inc.","cloud":"cloudflare"}
+```
+
+- **Strictly offline** — the lookup is a local binary-search/containment check against a bundled prefix table. No DNS query, no API call, and no target IP leaves the machine.
+- **Hints, not a registry** — the table covers common clouds and CDNs (AWS, GCP, Azure, Cloudflare, Fastly, DigitalOcean, GitHub) and is deliberately non-exhaustive; an unmatched address gets no fields, never a guessed ASN.
+- **Facts stay separate** — `asn`, `asn_org` and `cloud` are metadata beside the scan result and never replace the raw IP, port or state.
+- **Opt-in** — without `--asn` no lookup is performed. An external ASN source is intentionally not implemented in this iteration: the tool stays offline and no target data is disclosed.
+
 ### Machine-readable output (`--output`)
 
-By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto` (`tcp`, `udp`, `arp`, or `icmp`), `scan` (the probe that produced it: `connect`, `syn`, `ack`, `fin`, `null`, `xmas`, `arp`, `icmp`, or `none` for `-Pn`), `latency_ms`, and `status`, plus the optional enrichment/reason/classification fields `service`, `banner`, `discovery`, `mac`, `oui`, `reason`, `ptr`, `ptr_confirmed`, `device_type`, and `device_confidence` when they are known. JSON/JSON Lines omit unknown fields; CSV always has all sixteen columns; grep emits them tab-separated after `latency_ms`, so the original first six columns keep their positions.
+By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto` (`tcp`, `udp`, `arp`, or `icmp`), `scan` (the probe that produced it: `connect`, `syn`, `ack`, `fin`, `null`, `xmas`, `arp`, `icmp`, or `none` for `-Pn`), `latency_ms`, and `status`, plus the optional enrichment/reason/classification fields `service`, `banner`, `discovery`, `mac`, `oui`, `reason`, `ptr`, `ptr_confirmed`, `device_type`, `device_confidence`, `asn`, `asn_org`, and `cloud` when they are known. JSON/JSON Lines omit unknown fields; CSV always has all nineteen columns; grep emits them tab-separated after `latency_ms`, so the original first six columns keep their positions.
 
 ```bash
 # One JSON object per open port, on its own line (JSON Lines)
@@ -545,7 +565,7 @@ asphyxia ps -t example.com -s 22,80,443 -o jsonl
 # A single JSON array of available hosts
 asphyxia as -s 192.168.1.0/24 -o json
 
-# CSV with a header row (ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence)
+# CSV with a header row (ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence,asn,asn_org,cloud)
 asphyxia ps -t example.com --top-ports 100 -o csv
 
 # Greppable, tab-separated columns for grep/awk/cut

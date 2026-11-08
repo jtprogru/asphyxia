@@ -232,6 +232,9 @@ Examples:
   asphyxia ps -t example.com --top-ports 1000 --sV --classify
   asphyxia as -s 192.168.1.0/24 --discovery arp --classify -o jsonl
 
+  # Add offline ASN/cloud hints (bundled table; no network requests)
+  asphyxia as -s 192.168.1.0/24 --Pn --asn -o jsonl
+
   # Emit machine-readable output for a pipeline (text | json | jsonl | csv | grep)
   asphyxia ps -t example.com -s 22,80,443 -o jsonl
   asphyxia as -s 10.0.0.0/24 -o json
@@ -255,6 +258,7 @@ Required arguments:
     --scan <MODE>                Probe type: connect (default), syn, or ack (raw modes need root)
     --sV                         Grab banners and identify the service on each open port
   --classify                   Infer device type from ports/banners/OUI (no new probes)
+  --asn                        Add offline ASN/cloud hints from the bundled table
     --resume <PATH>              Checkpoint progress and resume from PATH if it exists
     --rate <PPS>                 Cap connection attempts per second (0 = no cap)
     -T, --timing <0-5>           Timing profile (paranoid..insane) presetting the tunables
@@ -362,6 +366,10 @@ pub enum Args {
         /// Infer a coarse device type from collected ports/banners (no new probes)
         #[arg(long = "classify")]
         classify: bool,
+
+        /// Add offline ASN/cloud hints from the bundled prefix table (no network)
+        #[arg(long = "asn")]
+        asn: bool,
 
         /// After the scan, run nmap on each host's open ports for a deep dive
         #[arg(long = "nmap")]
@@ -478,6 +486,10 @@ pub enum Args {
         /// Infer a coarse device type from collected ports/banners/OUI (no new probes)
         #[arg(long = "classify")]
         classify: bool,
+
+        /// Add offline ASN/cloud hints from the bundled prefix table (no network)
+        #[arg(long = "asn")]
+        asn: bool,
 
         /// Exclude these hosts/CIDRs from the scan (repeatable, comma-separated)
         #[arg(long = "exclude", value_name = "SPEC")]
