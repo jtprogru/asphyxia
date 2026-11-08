@@ -1,7 +1,7 @@
 # Сканы FIN, NULL и XMAS
 
 Фаза: 1 — Расширение семейства сканирований
-Статус: Выполнено с ограничением (выпущено в 0.11.0, 2026-11-08)
+Статус: Выполнено (0.11.0; ICMP `filtered` — Unreleased)
 Зависит от: 01-ack-scan (общая обвязка флаг-профилей)
 Роадмап: docs/recon-roadmap.md (Фаза 1)
 
@@ -14,7 +14,7 @@
 - Обобщить конструирование TCP-пакетов в `src/scanner/syn.rs` для комбинаций FIN / NULL / XMAS (в идеале через один параметр флаг-профиля, общий с ACK-работой).
 - Правила классификации по режимам:
   - Получен RST → `closed`
-  - ICMP unreachable (type 3) → `filtered` (не реализовано; см. критерии)
+  - ICMP unreachable (type 3) → `filtered`
   - Нет ответа → `open|filtered`
 - Новые CLI-флаги (`--scan fin|null|xmas`), проброшенные через `Args::PortScan`, с переиспользованием пути отката SYN.
 - Явно помечать `open|filtered` во всех форматах вывода, чтобы выведенные состояния отличались от наблюдаемых фактов (принцип: факты важнее догадок).
@@ -22,7 +22,7 @@
 ## Критерии приёмки
 
 - [x] Каждый режим сообщает `closed` (RST) и `open|filtered` (молчание); результаты никогда молча не сливаются с `open`.
-- [ ] `filtered` по ICMP unreachable не реализован: pcap-фильтр захватывает только TCP-ответы, поэтому молчание классифицируется как `open|filtered`, а не как `filtered` (осознанное ограничение).
+- [x] ICMP unreachable классифицируется как `filtered`; pcap-фильтр теперь захватывает ICMP, а вложенный TCP-пакет даёт target/port.
 - [x] IPv6 откатывается на connect-скан с предупреждением (у FIN/NULL/XMAS нет connect-эквивалента).
 - [x] Применяется имеющийся откат при отказе raw-сокета/захвата.
 - [x] Лимиты скорости, таймауты, ретраи и конкурентность применяются ко всем трём режимам.
@@ -30,7 +30,7 @@
 
 ## Что сделано
 
-- `src/scanner/syn.rs`: `ProbeMode::Fin/Null/Xmas` с флаг-профилями (FIN=0x01, NULL=0x00, XMAS=FIN|PSH|URG) и метками; константы `TCP_PSH`/`TCP_URG`; `classify_reply` читает RST как `closed` для всех трёх режимов по RFC 793, а молчание (`Filtered`) вызывающий репортит как `open|filtered`; приёмник pcap и путь отката не тронуты — BPF-фильтр уже ловил RST.
+- `src/scanner/syn.rs`: `ProbeMode::Fin/Null/Xmas` с флаг-профилями (FIN=0x01, NULL=0x00, XMAS=FIN|PSH|URG) и метками; `classify_reply` читает RST как `closed` для всех трёх режимов по RFC 793, молчание (`Filtered`) вызывающий репортит как `open|filtered`; с Unreleased приёмник ловит ICMP unreachable, разбирает вложенный TCP и возвращает `filtered`.
 - `src/cli/mod.rs`: `ScanMode::Fin/Null/Xmas` → новые `ProbeMode`, `silent_means_open_filtered()`, downgrade-сообщения называют каждый режим (FIN/NULL/XMAS).
 - `src/main.rs`: `stealth_probe()` по образцу `ack_probe()` — RST финален (`closed`), молчание ретраится и репортится `open|filtered`; `status_str`/`scan_str` round-trip новых состояний и режимов; чекпоинты ключатся `tcp-fin`/`tcp-null`/`tcp-xmas` от *запрошенного* режима (совпадает с ключом даже при откате на connect); `--sV`/`--nmap` в этих режимах говорят, что делать нечего; текстовый вывод использует заголовок «Port states».
 - `src/output/mod.rs`, `src/resume.rs`: документация полей `scan`/`status` расширена (`fin`/`null`/`xmas`, `closed`, `open|filtered`); тесты round-trip чекпоинтов stealth-режимов и их несовместимости друг с другом.

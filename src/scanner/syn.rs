@@ -79,6 +79,9 @@ pub enum ProbeOutcome {
     /// RST to an ACK — the probe reached the port, so nothing filtered it. It
     /// says nothing about open/closed. ACK mode only.
     Unfiltered,
+    /// An ICMP destination-unreachable answered the probe: a filter or host
+    /// actively rejected it. Treated as `filtered` by every mode.
+    Unreachable,
     /// Anything else (or no reply) — filtered/indeterminate.
     Filtered,
 }
@@ -546,13 +549,20 @@ const READ_TIMEOUT_MS: i32 = 200;
 /// Enough to hold a link header plus a full IPv4 + TCP header with options.
 const SNAPLEN: i32 = 128;
 
+/// A recorded answer: TCP flag bytes, or an ICMP unreachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reply {
+    Flags(u8),
+    Unreachable,
+}
+
 /// State shared between the probe threads and the background pcap reader.
 struct ReceiverShared {
     /// Reply flag bytes keyed by `(target_ip, target_port)` — i.e. the source
     /// address of the reply. The raw flags are stored rather than a verdict,
     /// because what an RST means depends on the [`ProbeMode`] that asked; only
     /// segments that can answer a probe at all are kept (see [`is_probe_reply`]).
-    replies: Mutex<HashMap<(Ipv4Addr, u16), u8>>,
+    replies: Mutex<HashMap<(Ipv4Addr, u16), Reply>>,
     /// Woken whenever a new reply is recorded, so waiters re-check the map.
     signal: Condvar,
     /// Set on drop to stop the reader loop.
@@ -631,8 +641,8 @@ impl SynReceiver {
             .lock()
             .expect("syn receiver mutex poisoned");
         loop {
-            if let Some(&flags) = map.get(&key) {
-                return classify_reply(mode, flags);
+            if let Some(&reply) = map.get(&key) {
+                return outcome_for(mode, reply);
             }
             let now = Instant::now();
             if now >= deadline {
@@ -764,52 +774,108 @@ fn extract_ipv4_tcp(frame: &[u8], hint: usize) -> Option<(Ipv4Addr, u16, u16, u8
     None
 }
 
+/// Turn a recorded reply into the verdict for `mode`: an ICMP unreachable is
+/// `filtered` for every probe mode.
+fn outcome_for(mode: ProbeMode, reply: Reply) -> ProbeOutcome {
+    match reply {
+        Reply::Flags(flags) => classify_reply(mode, flags),
+        Reply::Unreachable => ProbeOutcome::Unreachable,
+    }
+}
+
+/// Extract the original `(target_ip, target_port)` from an ICMP
+/// destination-unreachable that quotes our TCP probe.
+fn extract_icmp_unreachable(frame: &[u8], hint: usize) -> Option<(Ipv4Addr, u16)> {
+    for offset in [hint, 0, 14, 4, 16] {
+        if frame.len() <= offset || frame[offset] >> 4 != 4 {
+            continue;
+        }
+        let packet = &frame[offset..];
+        if packet.len() < 20 {
+            continue;
+        }
+        let ihl = (packet[0] & 0x0f) as usize * 4;
+        if ihl < 20 || packet.len() < ihl + 8 || packet[9] != 1 {
+            continue;
+        }
+        let icmp = &packet[ihl..];
+        if icmp[0] != 3 || icmp.len() < 8 + 20 + 8 {
+            continue;
+        }
+        let quoted = &icmp[8..];
+        if quoted[0] >> 4 != 4 {
+            continue;
+        }
+        let inner_ihl = (quoted[0] & 0x0f) as usize * 4;
+        if inner_ihl < 20 || quoted.len() < inner_ihl + 8 || quoted[9] != 6 {
+            continue;
+        }
+        // ICMP errors commonly quote only the IP header plus 8 bytes of the
+        // original TCP segment; the destination port lives in the first four.
+        let tcp = &quoted[inner_ihl..];
+        if tcp.len() < 4 {
+            continue;
+        }
+        let target = Ipv4Addr::new(quoted[16], quoted[17], quoted[18], quoted[19]);
+        let port = u16::from_be_bytes([tcp[2], tcp[3]]);
+        return Some((target, port));
+    }
+    None
+}
+
 /// Read captured replies until stopped, recording each definitive outcome.
 fn reader_loop(mut cap: pcap::Capture<pcap::Active>, offset: usize, shared: &ReceiverShared) {
     let dbg = debug_enabled();
     while !shared.stop.load(Ordering::Relaxed) {
         match cap.next_packet() {
             Ok(packet) => {
-                let Some((src_ip, src_port, dst_port, flags)) =
+                if let Some((src_ip, src_port, dst_port, flags)) =
                     extract_ipv4_tcp(packet.data, offset)
-                else {
+                {
                     if dbg {
-                        let n = packet.data.len().min(20);
                         eprintln!(
-                            "[syn] unparsed frame len={} head={:02x?}",
-                            packet.data.len(),
-                            &packet.data[..n]
+                            "[syn] pkt src={src_ip} sport={src_port} dport={dst_port} flags={flags:#04x}"
                         );
                     }
-                    continue;
-                };
-                if dbg {
+                    // A SYN/ACK or RST identifies the port it came from.
+                    // Without a fixed source port, key the reply on its
+                    // (source ip, source port), i.e. the scanned target and
+                    // port — we deliberately do not match on the source port we
+                    // forged, since NAT/VPN can rewrite it in flight. With a
+                    // fixed source port every probe carries the same source
+                    // port, so replies are keyed by their destination port
+                    // instead (the scanned port, which is what our probe
+                    // carried as its destination). Our own outbound probes have
+                    // our source ip, a key no probe waits on, so they are
+                    // harmless; anything that cannot answer a probe is dropped
+                    // here, and the waiter turns the stored flags into a verdict
+                    // for its mode.
+                    if !is_probe_reply(flags) {
+                        continue;
+                    }
+                    let mut map = shared.replies.lock().expect("syn receiver mutex poisoned");
+                    let key = if has_fixed_source_port() {
+                        (src_ip, dst_port)
+                    } else {
+                        (src_ip, src_port)
+                    };
+                    map.entry(key).or_insert(Reply::Flags(flags));
+                    shared.signal.notify_all();
+                } else if let Some((target, port)) = extract_icmp_unreachable(packet.data, offset) {
+                    if dbg {
+                        eprintln!("[syn] icmp unreachable for {target}:{port}");
+                    }
+                    let mut map = shared.replies.lock().expect("syn receiver mutex poisoned");
+                    map.entry((target, port)).or_insert(Reply::Unreachable);
+                    shared.signal.notify_all();
+                } else if dbg {
+                    let n = packet.data.len().min(20);
                     eprintln!(
-                        "[syn] pkt src={src_ip} sport={src_port} dport={dst_port} flags={flags:#04x}"
+                        "[syn] unparsed frame len={} head={:02x?}",
+                        packet.data.len(),
+                        &packet.data[..n]
                     );
                 }
-                // A SYN/ACK or RST identifies the port it came from. Without a
-                // fixed source port, key the reply on its (source ip, source
-                // port), i.e. the scanned target and port — we deliberately do
-                // not match on the source port we forged, since NAT/VPN can
-                // rewrite it in flight. With a fixed source port every probe
-                // carries the same source port, so replies are keyed by their
-                // destination port instead (the scanned port, which is what our
-                // probe carried as its destination). Our own outbound probes have
-                // our source ip, a key no probe waits on, so they are harmless;
-                // anything that cannot answer a probe is dropped here, and the
-                // waiter turns the stored flags into a verdict for its mode.
-                if !is_probe_reply(flags) {
-                    continue;
-                }
-                let mut map = shared.replies.lock().expect("syn receiver mutex poisoned");
-                let key = if has_fixed_source_port() {
-                    (src_ip, dst_port)
-                } else {
-                    (src_ip, src_port)
-                };
-                map.entry(key).or_insert(flags);
-                shared.signal.notify_all();
             }
             Err(pcap::Error::TimeoutExpired) => continue,
             Err(_) => break,
@@ -1138,6 +1204,36 @@ mod tests {
         );
         pkt[9] = 17;
         assert!(parse_ipv4_tcp(&pkt).is_none());
+    }
+
+    #[test]
+    fn extracts_target_and_port_from_an_icmp_unreachable() {
+        let target: Ipv4Addr = "192.0.2.10".parse().unwrap();
+        let us: Ipv4Addr = "192.0.2.2".parse().unwrap();
+        let inner = build_ipv4_probe_with_ttl(us, target, 40000, 443, 1, 0, TCP_SYN, 64);
+        let mut icmp = vec![3u8, 1, 0, 0, 0, 0, 0, 0];
+        icmp.extend_from_slice(&inner);
+        let outer = build_ipv4_packet("192.0.2.254".parse().unwrap(), us, 1, &icmp, 64);
+        let mut frame = vec![0u8; 14];
+        frame.extend_from_slice(&outer);
+
+        assert_eq!(extract_icmp_unreachable(&frame, 14), Some((target, 443)));
+    }
+
+    #[test]
+    fn an_icmp_unreachable_is_filtered_for_every_mode() {
+        for mode in [
+            ProbeMode::Syn,
+            ProbeMode::Ack,
+            ProbeMode::Fin,
+            ProbeMode::Null,
+            ProbeMode::Xmas,
+        ] {
+            assert_eq!(
+                outcome_for(mode, Reply::Unreachable),
+                ProbeOutcome::Unreachable
+            );
+        }
     }
 
     #[test]

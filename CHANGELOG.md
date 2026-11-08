@@ -4,6 +4,13 @@ All notable changes to Asphyxia are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- FIN/NULL/XMAS scans now report `filtered` when an ICMP unreachable rejects
+  the probe, instead of merging that answer into `open|filtered`.
+
 ## [0.11.0] - 2026-11-08
 
 This release completes the network-reconnaissance roadmap: discovery beyond

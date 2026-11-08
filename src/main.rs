@@ -723,7 +723,7 @@ fn ack_probe(ip: Ipv4Addr, port: u16, timeout: Duration, retries: u32) -> Option
     }
     let status = match outcome {
         Some(syn::ProbeOutcome::Unfiltered) => "unfiltered",
-        Some(syn::ProbeOutcome::Filtered) => "filtered",
+        Some(syn::ProbeOutcome::Filtered | syn::ProbeOutcome::Unreachable) => "filtered",
         // An ACK probe never yields open/closed; `None` means the raw path
         // failed, and both leave the fallback to the caller.
         Some(syn::ProbeOutcome::Open | syn::ProbeOutcome::Closed) | None => return None,
@@ -766,6 +766,8 @@ fn stealth_probe(
         Some(syn::ProbeOutcome::Closed) => "closed",
         // Silence: open or filtered, and we say exactly that.
         Some(syn::ProbeOutcome::Filtered) => "open|filtered",
+        // An ICMP unreachable is a filter/host actively rejecting the probe.
+        Some(syn::ProbeOutcome::Unreachable) => "filtered",
         // FIN/NULL/XMAS never yield open/unfiltered; `None` means the raw path
         // failed, and both leave the fallback to the caller.
         Some(syn::ProbeOutcome::Open | syn::ProbeOutcome::Unfiltered) | None => return None,
@@ -854,7 +856,12 @@ fn scan_one(
                     }
                     Some(syn::ProbeOutcome::Closed) => return None,
                     // Filtered, or raw socket unusable: fall back to a connect probe.
-                    Some(syn::ProbeOutcome::Filtered | syn::ProbeOutcome::Unfiltered) | None => {}
+                    Some(
+                        syn::ProbeOutcome::Filtered
+                        | syn::ProbeOutcome::Unfiltered
+                        | syn::ProbeOutcome::Unreachable,
+                    )
+                    | None => {}
                 }
             }
         }
