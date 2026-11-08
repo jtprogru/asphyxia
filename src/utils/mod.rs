@@ -95,7 +95,7 @@ pub fn read_targets_from_file(path: &std::path::Path) -> std::io::Result<Vec<Str
 /// * a line beginning with `{` or `[` is parsed as JSON and every `ip` field it
 ///   contains is taken as a target (covers `-o json` and `-o jsonl`);
 /// * a line in CIDR notation (e.g. `192.168.1.0/28`) is expanded into its
-///   individual addresses, up to [`MAX_TARGET_CIDR_HOSTS`];
+///   individual addresses, up to `MAX_TARGET_CIDR_HOSTS`;
 /// * any other non-empty line is treated as a bare host/IP.
 ///
 /// Blank lines are skipped, JSON lines that fail to parse are ignored, and

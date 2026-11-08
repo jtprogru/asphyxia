@@ -33,7 +33,7 @@
 
 ## Реализация
 
-- `src/report.rs` — `ReportFormat` (`md`/`html`), `ReportMeta`, группировки `by_host`/`by_service`/`by_device`, санитизация и усечение баннеров, Markdown/HTML-рендер.
+- `src/report.rs` — `ReportFormat` (`md`/`html`), `ReportMeta`, группировки `by_host`/`by_service`/`by_device`, санитизация и усечение баннеров, Markdown/HTML-рендер; в host-секции показываются MAC/PTR/ASN, если обогащение включено.
 - `src/cli/mod.rs` / `src/main.rs` — `--report`, `--report-file`, `--full-banners` на `ps` и `as`; отчёт строится из тех же записей, что машинный вывод, и заменяет обычный вывод (в режиме `--watch` report-флаги отбрасываются).
 - `src/output/mod.rs` — `ScanRecord` теперь `Clone`, чтобы один список отдавать и в emit, и в отчёт.
 - README/`--help` обновлены.

@@ -42,7 +42,7 @@ fn with_retries<F: FnMut() -> Probe>(retries: u32, mut probe: F) -> Probe {
 
 /// An open port together with how long the TCP handshake took.
 ///
-/// The latency is the wall-clock time spent in [`TcpStream::connect_timeout`]
+/// The latency is the wall-clock time spent in [`std::net::TcpStream::connect_timeout`]
 /// for the successful connection — a rough proxy for how close the target is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortHit {

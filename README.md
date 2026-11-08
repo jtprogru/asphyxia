@@ -180,15 +180,12 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `-r, --range <START> <END>` | Scan an inclusive range of ports |
 | `-s, --specific <PORTS>` | Scan specific comma-separated ports |
 | `-a, --all-ports` | Scan the entire port range (1-65535) |
-| `-u, --udp` | Scan UDP ports instead of TCP (results are `open` or `open\|filtered`) |
+| `-u, --udp` | Scan UDP ports instead of TCP (results are `open`, `closed`, `filtered` or `open\|filtered`) |
 | `--syn` | SYN/stealth scan via raw sockets (IPv4; needs root/`CAP_NET_RAW`, else falls back to connect) |
 | `--scan <MODE>` | Probe type: `connect` (default), `syn`, `ack` (firewall state), or `fin`/`null`/`xmas` (stealth; closed or open\|filtered). Raw modes need root, else fall back to connect |
 | `--sV` (`--banner`) | Grab banners and identify the service on each open TCP port |
 | `--classify` | Infer a coarse device type and confidence from already-collected ports/banners (no new probes) |
 | `--asn` | Add offline `asn`, `asn_org` and `cloud` hints from the bundled prefix table; no network requests |
-| `--report <md\|html>` | Generate a Markdown or HTML report from the records (report output replaces the normal output) |
-| `--report-file <PATH>` | Write the report to a file instead of stdout |
-| `--full-banners` | Keep full sanitized banners in the report (default: truncate to 80 characters) |
 | `--report <md\|html>` | Generate a Markdown or HTML report from the records (report output replaces the normal output) |
 | `--report-file <PATH>` | Write the report to a file instead of stdout |
 | `--full-banners` | Keep full sanitized banners in the report (default: truncate to 80 characters) |
@@ -202,7 +199,7 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `--nmap` | After the scan, run nmap on each host's open ports for a deep dive |
 | `--nmap-args <ARGS>` | Custom nmap arguments (replace the default `-sV -sC`); implies `--nmap` |
 | `--source-port <PORT>` | Fixed source port for raw TCP probes (raw modes only; ignored with a warning in connect/UDP scans) — useful for testing firewall rules keyed on source port |
-| `--delay <MS>` | Minimum delay between probes, in milliseconds. Combined with `--jitter`, each probe's interval is randomized within ±PCT of this value |
+| `--delay <MS>` | Minimum interval between probes to the **same host**, in milliseconds. Combined with `--jitter`, each probe's interval is randomized within ±PCT of this value |
 | `--jitter <PCT>` | Jitter as a percentage (0–100) of `--delay`, randomizing each probe's interval within ±PCT. Requires `--delay` |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
 | `-e, --interface <NAME>` (`--iface`) | Bind every probe to this network interface (e.g. `en0`), like `ssh -B` / `nmap -e` |
@@ -366,7 +363,7 @@ Details and limitations:
 
 - **Platforms** — macOS/BSD-family and illumos/Solaris use `IP_BOUND_IF`/`IPV6_BOUND_IF` (no privileges needed); Linux/Android use `SO_BINDTODEVICE`, which needs root or `CAP_NET_RAW`. On any other platform the flag is rejected up front rather than silently ignored.
 - **Fail fast** — an unknown interface name, or a bind the OS refuses (e.g. `SO_BINDTODEVICE` without privileges), is reported before the scan starts and exits non-zero, so a scan never runs over the wrong route while pretending it was pinned.
-- **Coverage** — the interface applies to the connect scan, UDP probes, `--sV` banner grabs, and host discovery. With `--syn` it also steers the source address and the libpcap capture device, so SYN scanning follows the same link.
+- **Coverage** — the interface applies to the connect scan, UDP probes, `--sV` banner grabs, TCP/ARP/ICMP host discovery and traceroute. With `--syn` it also steers the source address and the libpcap capture device, so SYN scanning follows the same link.
 - **Config** — set `interface = "en0"` in `~/.asphyxia.toml` to make it the default; a command-line `-e` still overrides it.
 
 #### Resuming a long scan (`--resume`)
@@ -447,11 +444,6 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 | `--report <md\|html>` | Generate a Markdown or HTML report from the records (report output replaces the normal output) |
 | `--report-file <PATH>` | Write the report to a file instead of stdout |
 | `--full-banners` | Keep full sanitized banners in the report (default: truncate to 80 characters) |
-| `--report <md\|html>` | Generate a Markdown or HTML report from the records (report output replaces the normal output) |
-| `--report-file <PATH>` | Write the report to a file instead of stdout |
-| `--full-banners` | Keep full sanitized banners in the report (default: truncate to 80 characters) |
-| `--watch <INTERVAL>` | Rescan every interval (`30s`, `5m`, `1h`) and emit JSON Lines changes; the first pass is a baseline |
-| `--watch-count <N>` | Stop watch mode after N passes (requires `--watch`) |
 | `--exclude <SPEC>` | Exclude hosts/CIDRs from the scan (repeatable; each value may be comma-separated) |
 | `--exclude-file <PATH>` | Exclude hosts/CIDRs listed in a file (one per line; `#` comments allowed) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
@@ -465,7 +457,7 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 
 > `--exclude-cdn` uses a small, static list of well-known CDN/WAF ranges (Cloudflare, Fastly, some Akamai) baked into the binary. It is a convenience, not an authoritative registry, and can drift as providers change allocations.
 
-> By default, host availability is inferred from TCP probes across a small spread of common ports (80, 443, 22, 3389), tried in order until one answers (`--discovery-ports` overrides the set): a host counts as up when any probed port either accepts the connection or actively refuses it (a closed port still proves the host answered). Probing more than one port finds live hosts that firewall port 80 but answer elsewhere. Only when every probed port times out or is unreachable is the host reported as down — so a host that silently drops packets on all of them may still appear offline. This is an unprivileged, best-effort check, not an ICMP ping; use `--Pn` to skip discovery entirely and treat every target as up.
+> By default, host availability is inferred from TCP probes across a small spread of common ports (80, 443, 22, 3389), tried in order until one answers (`--discovery-ports` overrides the set): a host counts as up when any probed port either accepts the connection or actively refuses it (a closed port still proves the host answered). Probing more than one port finds live hosts that firewall port 80 but answer elsewhere. Only when every probed port times out or is unreachable is the host reported as down — so a host that silently drops packets on all of them may still appear offline. This is an unprivileged, best-effort check — the default is not an ICMP ping; use `--discovery icmp` for an actual ping sweep, or `--Pn` to skip discovery entirely and treat every target as up.
 
 #### ARP discovery (`--discovery arp`)
 
@@ -611,7 +603,7 @@ asphyxia ps -t example.com --top-ports 1000 --watch 30s --watch-count 3
 - **Bounded memory** — only the previous and current result sets are held; history is not accumulated.
 - **Stop conditions** — `--watch-count N` stops after N passes; Ctrl-C stops cleanly after the current pass.
 - **Per-pass limits** — every pass is a normal scan, so `--rate`, `--delay`, `--timeout`, `--retries`, `--sV`, `--classify` and `--asn` apply to each pass.
-- **Not combinable** — `--watch` rejects `--nmap`, `--stdin`, and `--resume`; `-o`/`--output-file` are ignored because watch output is always a JSON Lines event stream on stdout.
+- **Not combinable** — `--watch` rejects `--nmap`, `--stdin`, and `--resume`; `-o`/`--output-file` and report flags are ignored because watch output is always a JSON Lines event stream on stdout.
 
 ## Traceroute (`trace`)
 
@@ -647,11 +639,11 @@ asphyxia ps -t example.com --top-ports 100 --sV --classify --report md
 asphyxia as -s 192.168.1.0/24 --discovery arp --classify --report html --report-file inventory.html
 ```
 
-- **Metadata** — target scope, generation timestamp (Unix time), tool version and scan mode are in the header.
+- **Metadata** — target scope, generation timestamp (Unix time), tool version and scan mode are in the header; a host section also shows the MAC, PTR and ASN identity when those enrichments were enabled.
 - **Groupings** — by host (ports/services/status), by service, and by inferred device type (when `--classify` supplied one); unknown values are labelled `(unknown)`/`(unclassified)`.
 - **Same records** — the report is built from the same `ScanRecord` list as JSON/CSV/grep, so it cannot drift from the machine output.
 - **Banners** — sanitized (control characters removed) and truncated to 80 characters by default; `--full-banners` keeps the full sanitized text. HTML is escaped.
-- **Placement** — `--report-file` writes the report to a file; without it the report goes to stdout. Report mode replaces the normal text/machine output.
+- **Placement** — `--report-file` writes the report to a file; without it the report goes to stdout. Report mode replaces the normal text/machine output and skips the `--nmap` handoff (with a warning).
 
 ### Machine-readable output (`--output`)
 
@@ -784,7 +776,7 @@ asphyxia ps -t example.com --top-ports 100 --sV -o jsonl
 ### UDP scanning (DNS, NTP, SNMP)
 
 ```bash
-# Statuses are open or open|filtered; the proto field in machine output is "udp"
+# Statuses are open, closed, filtered or open|filtered; proto is "udp" in machine output
 asphyxia ps -t 192.168.1.1 -s 53,123,161 --udp
 ```
 
@@ -876,6 +868,11 @@ For example, a `/24` with the defaults completes in roughly one timeout window i
 - [indicatif](https://crates.io/crates/indicatif) — progress bars and spinners
 - [owo-colors](https://crates.io/crates/owo-colors) — terminal colors
 - [ipnetwork](https://crates.io/crates/ipnetwork) — IP network address handling
+- [serde](https://crates.io/crates/serde) / [serde_json](https://crates.io/crates/serde_json) — structured output and diff/report data
+- [toml](https://crates.io/crates/toml) — `~/.asphyxia.toml` config parsing
+- [socket2](https://crates.io/crates/socket2) / [libc](https://crates.io/crates/libc) — raw sockets, interface binding and TCP timeouts
+- [pcap](https://crates.io/crates/pcap) — SYN/ACK/FIN/NULL/XMAS, ARP and traceroute reply capture
+- [ctrlc](https://crates.io/crates/ctrlc) — resumable-scan and watch-mode interrupt handling
 
 ## Development
 

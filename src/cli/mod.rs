@@ -240,6 +240,15 @@ Examples:
   # Watch a scan and emit JSON Lines change events (baseline + diffs)
   asphyxia ps -t example.com --top-ports 100 --watch 5m --watch-count 3
 
+  # Compare two structured result files (JSON array or JSON Lines)
+  asphyxia diff before.jsonl after.jsonl -o jsonl
+
+  # Trace the IPv4 path to a target (needs root/CAP_NET_RAW)
+  sudo asphyxia trace example.com --transport tcp
+
+  # Generate a Markdown report from the same records as the machine output
+  asphyxia ps -t example.com --top-ports 1000 --sV --classify --report md
+
   # Emit machine-readable output for a pipeline (text | json | jsonl | csv | grep)
   asphyxia ps -t example.com -s 22,80,443 -o jsonl
   asphyxia as -s 10.0.0.0/24 -o json
@@ -258,17 +267,17 @@ Required arguments:
     -a, --all-ports              Scan the entire port range (1-65535)
     --top-ports <N>              Scan the N most common TCP ports (up to 1000)
     --ports <NAME>               Scan a named port set (web, mail, db, remote, windows)
-    -u, --udp                    Scan UDP ports instead of TCP (open or open|filtered)
+    -u, --udp                    Scan UDP ports instead of TCP (open, closed, filtered or open|filtered)
     --syn                        SYN/stealth scan via raw sockets (needs root; else connect)
-    --scan <MODE>                Probe type: connect (default), syn, or ack (raw modes need root)
+    --scan <MODE>                Probe type: connect (default), syn, ack, fin, null or xmas
     --sV                         Grab banners and identify the service on each open port
-  --classify                   Infer device type from ports/banners/OUI (no new probes)
-  --asn                        Add offline ASN/cloud hints from the bundled table
-  --report <md|html>           Generate a Markdown/HTML report from the scan records
-  --report-file <PATH>         Write the report to a file instead of stdout
-  --full-banners               Keep full sanitized banners in the report (default: truncated)
-  --watch <INTERVAL>           Rescan every INTERVAL (30s, 5m) and emit JSONL change events
-  --watch-count <N>            Stop watch mode after N passes (requires --watch)
+    --classify                   Infer device type from ports/banners/OUI (no new probes)
+    --asn                        Add offline ASN/cloud hints from the bundled table
+    --report <md|html>           Generate a Markdown/HTML report from the scan records
+    --report-file <PATH>         Write the report to a file instead of stdout
+    --full-banners               Keep full sanitized banners in the report (default: truncated)
+    --watch <INTERVAL>           Rescan every INTERVAL (30s, 5m) and emit JSONL change events
+    --watch-count <N>            Stop watch mode after N passes (requires --watch)
     --resume <PATH>              Checkpoint progress and resume from PATH if it exists
     --rate <PPS>                 Cap connection attempts per second (0 = no cap)
     -T, --timing <0-5>           Timing profile (paranoid..insane) presetting the tunables
@@ -286,6 +295,11 @@ Required arguments:
     --discovery-ports <PORTS>    Comma-separated TCP ports for host discovery (default 80,443,22,3389)
     --show-down                  Include ICMP non-responders as status "down" with a reason
     --resolve-ptr                Enrich live hosts with PTR and forward-confirmed PTR
+    --classify                   Infer device type from ports/banners/OUI (no new probes)
+    --asn                        Add offline ASN/cloud hints from the bundled table
+    --report <md|html>           Generate a Markdown/HTML report from the scan records
+    --report-file <PATH>         Write the report to a file instead of stdout
+    --full-banners               Keep full sanitized banners in the report (default: truncated)
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
     -e, --interface <NAME>       Bind every probe to this interface (e.g. en0), like `ssh -B`
 "#

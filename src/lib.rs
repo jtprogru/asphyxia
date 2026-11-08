@@ -1,19 +1,31 @@
 //! Asphyxia - A fast and efficient network scanner
 //!
-//! This library provides high-performance network scanning capabilities for both port scanning
-//! and address scanning operations. It's designed to be efficient, reliable, and easy to use.
+//! This library provides high-performance network scanning capabilities: connect,
+//! SYN/ACK/FIN/NULL/XMAS and UDP probes, ARP/ICMP host discovery, service
+//! detection, offline enrichment, result comparison, watch mode, traceroute and
+//! Markdown/HTML reports.
 //!
 //! ## Features
 //!
-//! - **Port Scanning**: Scan individual ports or ranges of ports on target hosts
-//! - **Address Scanning**: Check host availability and scan IP ranges
-//! - **Subnet Scanning**: Scan entire subnets for available hosts
+//! - **Port Scanning**: Connect, raw TCP (SYN/ACK/FIN/NULL/XMAS) and UDP probes
+//! - **Host Discovery**: TCP, ARP, ICMP and combined discovery plans
+//! - **Enrichment**: Service detection, PTR lookup, device classification and
+//!   offline ASN/cloud hints
+//! - **Address Scanning**: Subnets, ranges and individual hosts, with exclusions
+//! - **Time and Topology**: Result diffing, watch mode and traceroute
+//! - **Reporting**: Text, JSON/JSONL/CSV/grep and Markdown/HTML reports
 //! - **Utility Functions**: Helper functions for parsing ports, IPs, and subnets
 //!
 //! ## Module Organization
 //!
-//! - `scanner::port`: Port scanning functionality
-//! - `scanner::address`: Address and subnet scanning functionality
+//! - `scanner::port`: Port scanning, UDP probes and service banners
+//! - `scanner::address`: Address, subnet and range scanning
+//! - `scanner::discovery`: ARP and ICMP host-discovery probes
+//! - `scanner::syn`: Raw TCP packet construction/reply capture
+//! - `dns`, `classify`, `asn`: Optional identity enrichment
+//! - `diff`, `report`, `traceroute`: Comparison, reports and path tracing
+//! - `rate`, `timing`, `iface`, `resume`, `config`: Scan control and state
+//! - `output`: Structured result records and formats
 //! - `utils`: Utility functions for parsing and validation
 //! - `cli`: Command-line interface implementation
 //!

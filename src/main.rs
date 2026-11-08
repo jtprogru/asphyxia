@@ -301,7 +301,8 @@ fn run_watch(spec: &str, count: Option<usize>) -> Result<(), String> {
 
         if let Some(previous) = previous.take() {
             let report = asphyxia::diff::compare(previous, current.clone());
-            if report.is_empty() && report.warnings.is_empty() {
+            let events = asphyxia::diff::events(&report);
+            if report.is_empty() {
                 println!(
                     "{}",
                     serde_json::json!({
@@ -310,15 +311,14 @@ fn run_watch(spec: &str, count: Option<usize>) -> Result<(), String> {
                         "pass": pass
                     })
                 );
-            } else {
-                for event in asphyxia::diff::events(&report) {
-                    let mut event = event;
-                    if let Some(object) = event.as_object_mut() {
-                        object.insert("timestamp".into(), serde_json::json!(timestamp));
-                        object.insert("pass".into(), serde_json::json!(pass));
-                    }
-                    println!("{event}");
+            }
+            for event in events {
+                let mut event = event;
+                if let Some(object) = event.as_object_mut() {
+                    object.insert("timestamp".into(), serde_json::json!(timestamp));
+                    object.insert("pass".into(), serde_json::json!(pass));
                 }
+                println!("{event}");
             }
         } else {
             println!(
@@ -1746,6 +1746,12 @@ fn main() {
                 .collect();
 
             if let Some(report_format) = report {
+                if nmap {
+                    eprintln!(
+                        "{}",
+                        "--report replaces the normal output and skips the --nmap handoff".yellow()
+                    );
+                }
                 let scope = resolved
                     .iter()
                     .map(|(host, _)| host.as_str())
