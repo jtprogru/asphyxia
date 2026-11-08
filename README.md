@@ -30,6 +30,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Offline ASN / cloud hints** — `--asn` adds `asn`, `asn_org` and `cloud` from a bundled prefix table, with no DNS or API requests and no target IP leaving the machine.
 - **Scan comparison** — `asphyxia diff old.json new.json` reports new/removed hosts and ports plus status, service and banner changes, with a JSON Lines change stream for downstream tools.
 - **Watch mode** — `ps --watch 5m` rescans the same scope on an interval and emits JSON Lines change events, with an explicit baseline, `--watch-count` stop condition, and bounded memory.
+- **Traceroute** — `trace <target>` maps the path with per-hop RTT and loss over TCP (default) or ICMP, keeping silent hops visible and marking the first one.
 - **Chainable scans** — pipe the hosts an address scan discovers straight into a port scan with `--stdin`, turning host discovery and port scanning into a single pipeline.
 - **IPv4 and IPv6** — connect and UDP scans accept both address families; raw TCP and ARP modes are IPv4-only and fall back visibly for IPv6.
 - **Configurable timeout** — tune the per-connection timeout with `--timeout`.
@@ -598,6 +599,28 @@ asphyxia ps -t example.com --top-ports 1000 --watch 30s --watch-count 3
 - **Stop conditions** — `--watch-count N` stops after N passes; Ctrl-C stops cleanly after the current pass.
 - **Per-pass limits** — every pass is a normal scan, so `--rate`, `--delay`, `--timeout`, `--retries`, `--sV`, `--classify` and `--asn` apply to each pass.
 - **Not combinable** — `--watch` rejects `--nmap`, `--stdin`, and `--resume`; `-o`/`--output-file` are ignored because watch output is always a JSON Lines event stream on stdout.
+
+## Traceroute (`trace`)
+
+`asphyxia trace <target>` sends probes with increasing TTL and reports each hop's address, round-trip times and loss. TCP is the default transport because it crosses paths that drop ICMP; `--transport icmp` uses echo requests.
+
+```bash
+# TCP traceroute to port 80, three probes per hop
+sudo asphyxia trace example.com
+
+# ICMP traceroute with a longer per-probe timeout
+sudo asphyxia trace example.com --transport icmp --timeout 2000
+
+# Structured, one hop per line
+sudo asphyxia trace example.com -o jsonl | jq -c 'select(.event == "hop")'
+```
+
+- **Silent hops stay visible** — a hop that never answers is printed as `*` and marked `[silent]`, and `first_silent_hop` is recorded instead of the hop disappearing.
+- **TCP or ICMP** — TCP probes use a SYN to `--port` (default 80) and stop on a SYN/ACK or RST from the target; ICMP probes use echo requests.
+- **Per-hop data** — TTL, probe results (address + RTT), `loss_pct` and `silent`; the final `status` is `reached`, `unreachable`, or `max-hops`.
+- **Formats** — `-o text` (default), `-o json` (one report), or `-o jsonl` (a `trace` record, one `hop` per line, then `summary`). `--output-file` writes to a file.
+- **Requirements** — IPv4 only and raw sockets: root or `CAP_NET_RAW`, plus libpcap for the reply capture. IPv6 targets fail with a clear message rather than a fake path.
+- **Bounds** — `--max-hops` (1–64), `--probes` (1–10) and `--timeout` keep the run bounded.
 
 ### Machine-readable output (`--output`)
 

@@ -85,6 +85,12 @@ pub fn build_echo_request(id: u16, seq: u16) -> Vec<u8> {
     packet
 }
 
+/// Wrap an echo request in an IPv4 header with the given TTL, for traceroute.
+pub fn build_ipv4_echo(src: Ipv4Addr, dst: Ipv4Addr, id: u16, seq: u16, ttl: u8) -> Vec<u8> {
+    let icmp = build_echo_request(id, seq);
+    crate::scanner::syn::build_ipv4_packet(src, dst, IPPROTO_ICMP, &icmp, ttl)
+}
+
 /// A reply the receiver understands: an echo reply or an unreachable, both
 /// identified by the original probe's sequence number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,6 +410,20 @@ mod tests {
         assert_eq!(u16::from_be_bytes([packet[4], packet[5]]), 0x1234);
         assert_eq!(u16::from_be_bytes([packet[6], packet[7]]), 0x5678);
         assert_eq!(checksum(&packet), 0, "a checksummed packet sums to zero");
+    }
+
+    #[test]
+    fn ipv4_echo_sets_the_requested_ttl() {
+        let packet = build_ipv4_echo(
+            "10.0.0.1".parse().unwrap(),
+            "10.0.0.2".parse().unwrap(),
+            1,
+            7,
+            3,
+        );
+        assert_eq!(packet[8], 3);
+        assert_eq!(packet[9], IPPROTO_ICMP);
+        assert_eq!(checksum(&packet[..IPV4_HEADER_LEN]), 0);
     }
 
     #[test]

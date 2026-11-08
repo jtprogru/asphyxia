@@ -259,8 +259,35 @@ pub fn build_ipv4_probe(
     ack: u32,
     flags: u8,
 ) -> Vec<u8> {
+    build_ipv4_probe_with_ttl(src, dst, src_port, dst_port, seq, ack, flags, 64)
+}
+
+/// [`build_ipv4_probe`] with an explicit TTL, used by traceroute.
+#[allow(clippy::too_many_arguments)]
+pub fn build_ipv4_probe_with_ttl(
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    ttl: u8,
+) -> Vec<u8> {
     let tcp = build_tcp_probe(src, dst, src_port, dst_port, seq, ack, flags);
-    let total_len = (IPV4_HEADER_LEN + tcp.len()) as u16;
+    build_ipv4_packet(src, dst, IPPROTO_TCP, &tcp, ttl)
+}
+
+/// Wrap `payload` in an IPv4 header for `protocol` with a valid header checksum
+/// and the given TTL. Shared by the raw TCP and ICMP probe builders.
+pub(crate) fn build_ipv4_packet(
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    protocol: u8,
+    payload: &[u8],
+    ttl: u8,
+) -> Vec<u8> {
+    let total_len = (IPV4_HEADER_LEN + payload.len()) as u16;
 
     let mut ip = vec![0u8; IPV4_HEADER_LEN];
     ip[0] = 0x45; // version 4, IHL 5 (20 bytes)
@@ -268,8 +295,8 @@ pub fn build_ipv4_probe(
     ip[2..4].copy_from_slice(&total_len.to_be_bytes());
     // identification (4..6) stays 0.
     ip[6..8].copy_from_slice(&0x4000u16.to_be_bytes()); // don't fragment
-    ip[8] = 64; // TTL
-    ip[9] = IPPROTO_TCP;
+    ip[8] = ttl;
+    ip[9] = protocol;
     // header checksum (10..12) left zero for the computation.
     ip[12..16].copy_from_slice(&src.octets());
     ip[16..20].copy_from_slice(&dst.octets());
@@ -277,7 +304,7 @@ pub fn build_ipv4_probe(
     let sum = checksum(&ip);
     ip[10..12].copy_from_slice(&sum.to_be_bytes());
 
-    ip.extend_from_slice(&tcp);
+    ip.extend_from_slice(payload);
     ip
 }
 
@@ -350,7 +377,7 @@ pub fn raw_socket_available() -> bool {
 /// The socket is opened through the interface-binding helper, so with
 /// `--interface` the source address (and hence the pcap capture device chosen
 /// from it) follows the requested link rather than the default route.
-fn local_ipv4_for(dst: Ipv4Addr) -> Option<Ipv4Addr> {
+pub(crate) fn local_ipv4_for(dst: Ipv4Addr) -> Option<Ipv4Addr> {
     let socket = crate::iface::udp_connect(SocketAddr::new(dst.into(), 80)).ok()?;
     match socket.local_addr().ok()?.ip() {
         IpAddr::V4(v4) => Some(v4),
@@ -692,7 +719,7 @@ fn debug_enabled() -> bool {
 }
 
 /// The pcap device whose addresses include `src`, else libpcap's default.
-fn device_for(src: Ipv4Addr) -> Option<pcap::Device> {
+pub(crate) fn device_for(src: Ipv4Addr) -> Option<pcap::Device> {
     let list = pcap::Device::list().ok()?;
     list.into_iter()
         .find(|dev| {
@@ -706,7 +733,7 @@ fn device_for(src: Ipv4Addr) -> Option<pcap::Device> {
 /// Bytes of link-layer header before the IPv4 packet, by datalink type. The
 /// common cases; anything else is assumed Ethernet, and [`extract_ipv4_tcp`]
 /// recovers if that guess is wrong.
-fn datalink_offset(link: pcap::Linktype) -> usize {
+pub(crate) fn datalink_offset(link: pcap::Linktype) -> usize {
     if link == pcap::Linktype::ETHERNET {
         14
     } else if link == pcap::Linktype::NULL || link == pcap::Linktype::LOOP {
@@ -1063,6 +1090,22 @@ mod tests {
             IPV4_HEADER_LEN + TCP_HEADER_LEN
         );
         assert_eq!(ip[9], IPPROTO_TCP);
+    }
+
+    #[test]
+    fn explicit_ttl_reaches_the_ip_header() {
+        let ip = build_ipv4_probe_with_ttl(
+            "10.0.0.1".parse().unwrap(),
+            "10.0.0.2".parse().unwrap(),
+            40000,
+            80,
+            1,
+            0,
+            TCP_SYN,
+            7,
+        );
+        assert_eq!(ip[8], 7);
+        assert_eq!(checksum(&ip[..IPV4_HEADER_LEN]), 0);
     }
 
     #[test]

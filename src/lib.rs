@@ -102,6 +102,7 @@ pub mod rate;
 pub mod resume;
 pub mod scanner;
 pub mod timing;
+pub mod traceroute;
 pub mod utils;
 
 pub use asn::{AsnInfo, lookup as lookup_asn};

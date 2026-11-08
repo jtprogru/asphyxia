@@ -4,6 +4,7 @@ use clap::{ArgGroup, Parser, ValueEnum};
 
 use crate::output::OutputFormat;
 use crate::scanner::syn::ProbeMode;
+use crate::traceroute::Transport;
 
 /// The host-discovery probe used by `as`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
@@ -566,6 +567,49 @@ pub enum Args {
         #[arg(long = "output-file", visible_alias = "oF", value_name = "PATH")]
         output_file: Option<PathBuf>,
     },
+    /// Trace the network path to an IPv4 target
+    #[command(name = "trace", about = "Trace the network path to an IPv4 target")]
+    Trace {
+        /// Target IPv4 address (or hostname)
+        target: String,
+
+        /// Probe transport: tcp (default) or icmp
+        #[arg(long, value_enum, default_value_t = Transport::Tcp)]
+        transport: Transport,
+
+        /// Destination TCP port for tcp probes
+        #[arg(long, default_value_t = 80)]
+        port: u16,
+
+        /// Maximum number of hops
+        #[arg(long = "max-hops", value_name = "N", default_value_t = 30, value_parser = clap::value_parser!(u8).range(1..=64))]
+        max_hops: u8,
+
+        /// Probes per hop
+        #[arg(long, value_name = "N", default_value_t = 3, value_parser = clap::value_parser!(u8).range(1..=10))]
+        probes: u8,
+
+        /// Per-probe timeout in milliseconds
+        #[arg(long, value_name = "MS", default_value_t = 1000)]
+        timeout: u64,
+
+        /// Bind the raw probe socket to this interface (e.g. en0)
+        #[arg(
+            short = 'e',
+            long = "interface",
+            visible_alias = "iface",
+            value_name = "NAME"
+        )]
+        interface: Option<String>,
+
+        /// Output format: text (default), json, or jsonl (one hop per line)
+        #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
+        output: OutputFormat,
+
+        /// Write the report to a file instead of stdout
+        #[arg(long = "output-file", visible_alias = "oF", value_name = "PATH")]
+        output_file: Option<PathBuf>,
+    },
 }
 
 impl Args {
@@ -576,7 +620,7 @@ impl Args {
             Args::PortScan { concurrency, .. } | Args::AddressScan { concurrency, .. } => {
                 *concurrency
             }
-            Args::Diff { .. } => 256,
+            Args::Diff { .. } | Args::Trace { .. } => 256,
         }
     }
 
@@ -584,7 +628,7 @@ impl Args {
     pub fn output_format(&self) -> OutputFormat {
         match self {
             Args::PortScan { output, .. } | Args::AddressScan { output, .. } => *output,
-            Args::Diff { output, .. } => *output,
+            Args::Diff { output, .. } | Args::Trace { output, .. } => *output,
         }
     }
 
@@ -596,6 +640,7 @@ impl Args {
                 interface.as_deref()
             }
             Args::Diff { .. } => None,
+            Args::Trace { interface, .. } => interface.as_deref(),
         }
     }
 
@@ -606,7 +651,9 @@ impl Args {
             Args::PortScan { output_file, .. } | Args::AddressScan { output_file, .. } => {
                 output_file.as_ref()
             }
-            Args::Diff { output_file, .. } => output_file.as_ref(),
+            Args::Diff { output_file, .. } | Args::Trace { output_file, .. } => {
+                output_file.as_ref()
+            }
         }
     }
 
@@ -615,7 +662,7 @@ impl Args {
     pub fn retries(&self) -> u32 {
         match self {
             Args::PortScan { retries, .. } | Args::AddressScan { retries, .. } => *retries,
-            Args::Diff { .. } => 0,
+            Args::Diff { .. } | Args::Trace { .. } => 0,
         }
     }
 
@@ -624,7 +671,7 @@ impl Args {
     pub fn rate(&self) -> Option<u32> {
         match self {
             Args::PortScan { rate, .. } | Args::AddressScan { rate, .. } => *rate,
-            Args::Diff { .. } => None,
+            Args::Diff { .. } | Args::Trace { .. } => None,
         }
     }
 
@@ -633,7 +680,7 @@ impl Args {
     pub fn delay(&self) -> Option<u64> {
         match self {
             Args::PortScan { delay, .. } => *delay,
-            Args::AddressScan { .. } | Args::Diff { .. } => None,
+            Args::AddressScan { .. } | Args::Diff { .. } | Args::Trace { .. } => None,
         }
     }
 
@@ -641,7 +688,7 @@ impl Args {
     pub fn jitter(&self) -> Option<u32> {
         match self {
             Args::PortScan { jitter, .. } => *jitter,
-            Args::AddressScan { .. } | Args::Diff { .. } => None,
+            Args::AddressScan { .. } | Args::Diff { .. } | Args::Trace { .. } => None,
         }
     }
 
@@ -649,9 +696,10 @@ impl Args {
     /// into [`ScanMode`]. UDP and address scans always use plain sockets.
     pub fn scan_mode(&self) -> ScanMode {
         match self {
-            Args::PortScan { udp: true, .. } | Args::AddressScan { .. } | Args::Diff { .. } => {
-                ScanMode::Connect
-            }
+            Args::PortScan { udp: true, .. }
+            | Args::AddressScan { .. }
+            | Args::Diff { .. }
+            | Args::Trace { .. } => ScanMode::Connect,
             Args::PortScan { syn, scan, .. } => {
                 if *syn {
                     ScanMode::Syn

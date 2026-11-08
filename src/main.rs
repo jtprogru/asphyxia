@@ -1181,8 +1181,8 @@ fn resolve_options(args: &mut Args, matches: &ArgMatches, config: &Config) {
                 }
             }
         }
-        // `diff` has no tunables to resolve.
-        Args::Diff { .. } => {}
+        // `diff` and `trace` have no scan tunables to resolve here.
+        Args::Diff { .. } | Args::Trace { .. } => {}
     }
 }
 
@@ -2142,6 +2142,84 @@ fn main() {
                 OutputFormat::Csv | OutputFormat::Grep => unreachable!("validated above"),
             };
 
+            match output_file {
+                Some(path) => {
+                    if let Err(e) = std::fs::write(&path, rendered) {
+                        eprintln!(
+                            "{}",
+                            format!("Failed to write {}: {e}", path.display()).red()
+                        );
+                        std::process::exit(2);
+                    }
+                }
+                None => print!("{rendered}"),
+            }
+        }
+        Args::Trace {
+            target,
+            transport,
+            port,
+            max_hops,
+            probes,
+            timeout,
+            output,
+            output_file,
+            ..
+        } => {
+            if !matches!(
+                output,
+                OutputFormat::Text | OutputFormat::Json | OutputFormat::Jsonl
+            ) {
+                eprintln!("{}", "trace supports -o text, -o json, or -o jsonl".red());
+                std::process::exit(2);
+            }
+            if transport == asphyxia::traceroute::Transport::Tcp && port == 0 {
+                eprintln!("{}", "--port must be 1..=65535".red());
+                std::process::exit(2);
+            }
+            if timeout == 0 {
+                eprintln!("{}", "--timeout must be greater than zero".red());
+                std::process::exit(2);
+            }
+
+            let ip = match target.parse::<IpAddr>() {
+                Ok(ip) => ip,
+                Err(_) => match port::resolve_host(&target) {
+                    Some(ip) => ip,
+                    None => {
+                        eprintln!("{}", format!("Could not resolve target: {target}").red());
+                        std::process::exit(2);
+                    }
+                },
+            };
+            let IpAddr::V4(target) = ip else {
+                eprintln!("{}", "traceroute is IPv4-only".red());
+                std::process::exit(2);
+            };
+
+            let report = match asphyxia::traceroute::trace(
+                target,
+                transport,
+                port,
+                max_hops,
+                probes,
+                Duration::from_millis(timeout),
+            ) {
+                Ok(report) => report,
+                Err(e) => {
+                    eprintln!("{}", e.red());
+                    std::process::exit(2);
+                }
+            };
+
+            let rendered = match output {
+                OutputFormat::Text => asphyxia::traceroute::render_text(&report),
+                OutputFormat::Json => {
+                    format!("{}\n", serde_json::to_string_pretty(&report).unwrap())
+                }
+                OutputFormat::Jsonl => asphyxia::traceroute::render_jsonl(&report),
+                OutputFormat::Csv | OutputFormat::Grep => unreachable!("validated above"),
+            };
             match output_file {
                 Some(path) => {
                     if let Err(e) = std::fs::write(&path, rendered) {

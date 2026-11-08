@@ -2006,3 +2006,31 @@ fn watch_count_requires_watch_and_rejects_zero() {
         .failure()
         .stderr(predicate::str::contains("at least 1"));
 }
+
+#[test]
+fn trace_is_documented_and_rejects_ipv6() {
+    asphyxia()
+        .args(["trace", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--transport"))
+        .stdout(predicate::str::contains("--max-hops"));
+
+    asphyxia()
+        .args(["trace", "::1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("IPv4-only"));
+}
+
+#[test]
+fn trace_rejects_invalid_hop_limits() {
+    asphyxia()
+        .args(["trace", "127.0.0.1", "--max-hops", "0"])
+        .assert()
+        .failure();
+    asphyxia()
+        .args(["trace", "127.0.0.1", "--probes", "0"])
+        .assert()
+        .failure();
+}
