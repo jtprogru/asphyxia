@@ -26,6 +26,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **ICMP ping sweep** — `as --discovery icmp` sends ICMP echo requests to routed IPv4 hosts and reports those that answer, without needing libpcap.
 - **Combined discovery** — `--discovery arp,icmp,tcp` tries several probes per host (or `auto` for ARP → ICMP → TCP), names the probe that confirmed each host, and degrades unavailable probes to warnings instead of failing the scan.
 - **Reverse DNS / PTR** — `as --resolve-ptr` adds a PTR name and a separate forward-confirmed verdict for each live host, with a bounded lookup that never fails the base scan.
+- **Device classification** — `--classify` labels an asset (`windows`, `printer`, `hypervisor`, `network-device`, `web-server`, or `unknown`) with a confidence, using only ports/banners already collected and the ARP OUI; it never probes again.
 - **Chainable scans** — pipe the hosts an address scan discovers straight into a port scan with `--stdin`, turning host discovery and port scanning into a single pipeline.
 - **IPv4 and IPv6** — connect and UDP scans accept both address families; raw TCP and ARP modes are IPv4-only and fall back visibly for IPv6.
 - **Configurable timeout** — tune the per-connection timeout with `--timeout`.
@@ -178,6 +179,7 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `--syn` | SYN/stealth scan via raw sockets (IPv4; needs root/`CAP_NET_RAW`, else falls back to connect) |
 | `--scan <MODE>` | Probe type: `connect` (default), `syn`, `ack` (firewall state), or `fin`/`null`/`xmas` (stealth; closed or open\|filtered). Raw modes need root, else fall back to connect |
 | `--sV` (`--banner`) | Grab banners and identify the service on each open TCP port |
+| `--classify` | Infer a coarse device type and confidence from already-collected ports/banners (no new probes) |
 | `--resume <PATH>` | Checkpoint progress to a file and resume from it if it already exists |
 | `--top-ports <N>` | Scan the `N` most common TCP ports (frequency-ordered, up to 1000) |
 | `--ports <NAME>` | Scan a named port set: `web`, `mail`, `db`, `remote`, `windows` |
@@ -401,6 +403,10 @@ asphyxia as -s 10.0.0.0/24 --discovery auto
 # Enrich live hosts with reverse DNS and a forward-confirmed PTR
 asphyxia as -s 192.168.1.0/24 --resolve-ptr -o jsonl
 
+# Infer a coarse device type from ports/banners or the ARP OUI
+asphyxia ps -t example.com --top-ports 1000 --sV --classify
+asphyxia as -s 192.168.1.0/24 --discovery arp --classify -o jsonl
+
 # Skip discovery and treat every address as up (like nmap -Pn)
 asphyxia as -s 192.168.1.0/24 --Pn -o jsonl | asphyxia ps --stdin --top-ports 100
 
@@ -419,6 +425,7 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 | `--discovery-ports <PORTS>` | Comma-separated TCP ports used by host discovery (default `80,443,22,3389`); a wider set finds hosts that firewall the defaults, at a linear time cost. Also used by the TCP fallback of `arp`/`icmp`. |
 | `--show-down` | With `--discovery icmp`, also emit hosts that did not answer (`status: "down"`, `reason: "unreachable"` or `"no-response"`) instead of listing only live hosts. |
 | `--resolve-ptr` | Enrich live hosts with a reverse-DNS PTR name and a separate forward-confirmed verdict (`ptr`, `ptr_confirmed`). Lookups are optional and bounded by the per-host timeout. |
+| `--classify` | Infer a coarse device type and confidence from already-collected ports/banners/OUI (no new probes) |
 | `--exclude <SPEC>` | Exclude hosts/CIDRs from the scan (repeatable; each value may be comma-separated) |
 | `--exclude-file <PATH>` | Exclude hosts/CIDRs listed in a file (one per line; `#` comments allowed) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
@@ -510,9 +517,25 @@ asphyxia as -s 192.168.1.0/24 --resolve-ptr -o jsonl
 - **Bounded** — each host's PTR and forward lookup gets its own timeout, so a slow resolver cannot extend the scan past that budget.
 - **Opt-in** — without the flag no DNS is performed.
 
+#### Device classification (`--classify`)
+
+`--classify` turns the facts already collected into a coarse asset label. It is a conclusion, not another probe: no packet is sent by the classifier, and the raw ports, banners and OUI stay in the record.
+
+```bash
+asphyxia ps -t example.com --top-ports 1000 --sV --classify
+asphyxia as -s 192.168.1.0/24 --discovery arp --classify -o jsonl
+# {"ip":"192.168.1.10","proto":"arp","scan":"arp","latency_ms":2,"status":"up","discovery":"arp","mac":"00:0c:29:...","oui":"00-0c-29","device_type":"hypervisor","device_confidence":"medium"}
+```
+
+- **Rules** — hypervisor (902, or a VMware/ESXi/vSphere banner); printer (9100/515/631); Windows (445/139/135, or RDP 3389 at lower confidence); network device (SSH plus a vendor banner, or telnet/SNMP); web server (80/443/8080/… at low confidence). Unmatched assets are `unknown`, never a guessed vendor.
+- **Two fields** — `device_type` plus `device_confidence` (`low` or `medium`) sit next to the raw facts; classification never rewrites them.
+- **OUI** — address scans use the ARP MAC's first three octets (VMware, Cisco/Juniper, Canon/HP prefixes in the built-in table); port scans have no MAC and classify from ports/banners only.
+- **Signals only** — a state like ACK `unfiltered` or FIN `open|filtered` is not treated as an open port, so those records classify as `unknown`.
+- **Opt-in** — without `--classify` no classification fields are emitted.
+
 ### Machine-readable output (`--output`)
 
-By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto` (`tcp`, `udp`, `arp`, or `icmp`), `scan` (the probe that produced it: `connect`, `syn`, `ack`, `fin`, `null`, `xmas`, `arp`, `icmp`, or `none` for `-Pn`), `latency_ms`, and `status`, plus the optional enrichment/reason fields `service`, `banner`, `discovery`, `mac`, `oui`, `reason`, `ptr`, and `ptr_confirmed` when they are known. JSON/JSON Lines omit unknown fields; CSV always has all fourteen columns; grep emits them tab-separated after `latency_ms`, so the original first six columns keep their positions.
+By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto` (`tcp`, `udp`, `arp`, or `icmp`), `scan` (the probe that produced it: `connect`, `syn`, `ack`, `fin`, `null`, `xmas`, `arp`, `icmp`, or `none` for `-Pn`), `latency_ms`, and `status`, plus the optional enrichment/reason/classification fields `service`, `banner`, `discovery`, `mac`, `oui`, `reason`, `ptr`, `ptr_confirmed`, `device_type`, and `device_confidence` when they are known. JSON/JSON Lines omit unknown fields; CSV always has all sixteen columns; grep emits them tab-separated after `latency_ms`, so the original first six columns keep their positions.
 
 ```bash
 # One JSON object per open port, on its own line (JSON Lines)
@@ -522,7 +545,7 @@ asphyxia ps -t example.com -s 22,80,443 -o jsonl
 # A single JSON array of available hosts
 asphyxia as -s 192.168.1.0/24 -o json
 
-# CSV with a header row (ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed)
+# CSV with a header row (ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence)
 asphyxia ps -t example.com --top-ports 100 -o csv
 
 # Greppable, tab-separated columns for grep/awk/cut

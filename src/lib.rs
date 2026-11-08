@@ -90,6 +90,7 @@
 //! appropriate. For large-scale scanning operations, consider using the subnet
 //! scanning functions which are optimized for scanning multiple hosts.
 
+pub mod classify;
 pub mod cli;
 pub mod config;
 pub mod dns;
@@ -101,6 +102,7 @@ pub mod scanner;
 pub mod timing;
 pub mod utils;
 
+pub use classify::{Device, classify_oui, classify_ports};
 pub use config::Config;
 pub use output::{OutputFormat, ScanRecord, emit, render};
 pub use resume::{ScanState, StateFinding};

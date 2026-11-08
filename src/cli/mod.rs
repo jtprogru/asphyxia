@@ -228,6 +228,10 @@ Examples:
   # Space probes out with a minimum delay and jitter (gentle on sensitive targets)
   asphyxia ps -t example.com --top-ports 1000 --delay 250 --jitter 20
 
+  # Infer a coarse device type from already-collected signals (no new probes)
+  asphyxia ps -t example.com --top-ports 1000 --sV --classify
+  asphyxia as -s 192.168.1.0/24 --discovery arp --classify -o jsonl
+
   # Emit machine-readable output for a pipeline (text | json | jsonl | csv | grep)
   asphyxia ps -t example.com -s 22,80,443 -o jsonl
   asphyxia as -s 10.0.0.0/24 -o json
@@ -250,6 +254,7 @@ Required arguments:
     --syn                        SYN/stealth scan via raw sockets (needs root; else connect)
     --scan <MODE>                Probe type: connect (default), syn, or ack (raw modes need root)
     --sV                         Grab banners and identify the service on each open port
+  --classify                   Infer device type from ports/banners/OUI (no new probes)
     --resume <PATH>              Checkpoint progress and resume from PATH if it exists
     --rate <PPS>                 Cap connection attempts per second (0 = no cap)
     -T, --timing <0-5>           Timing profile (paranoid..insane) presetting the tunables
@@ -353,6 +358,10 @@ pub enum Args {
         /// Checkpoint progress to a file and resume from it if it already exists
         #[arg(long = "resume", value_name = "PATH")]
         resume: Option<PathBuf>,
+
+        /// Infer a coarse device type from collected ports/banners (no new probes)
+        #[arg(long = "classify")]
+        classify: bool,
 
         /// After the scan, run nmap on each host's open ports for a deep dive
         #[arg(long = "nmap")]
@@ -465,6 +474,10 @@ pub enum Args {
         /// Enrich live hosts with reverse DNS and a forward-confirmed PTR
         #[arg(long = "resolve-ptr")]
         resolve_ptr: bool,
+
+        /// Infer a coarse device type from collected ports/banners/OUI (no new probes)
+        #[arg(long = "classify")]
+        classify: bool,
 
         /// Exclude these hosts/CIDRs from the scan (repeatable, comma-separated)
         #[arg(long = "exclude", value_name = "SPEC")]

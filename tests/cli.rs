@@ -329,7 +329,7 @@ fn port_scan_csv_emits_header_even_with_no_open_ports() {
         .assert()
         .success()
         .stdout(predicate::eq(
-            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed\n",
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence\n",
         ));
 }
 
@@ -415,7 +415,7 @@ fn config_supplies_defaults_that_flags_override() {
         .assert()
         .success()
         .stdout(predicate::eq(
-            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed\n",
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence\n",
         ));
 
     let _ = std::fs::remove_file(&path);
@@ -1428,7 +1428,7 @@ fn output_file_writes_machine_output_and_keeps_stdout_clean() {
 
     let contents = std::fs::read_to_string(&path).expect("output file should exist");
     assert!(contents.starts_with(
-        "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed\n"
+        "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed,device_type,device_confidence\n"
     ));
     let _ = std::fs::remove_file(&path);
 }
@@ -1683,6 +1683,44 @@ fn discovery_auto_rejects_explicit_probes() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("cannot be combined"));
+}
+
+#[test]
+fn classify_is_documented_and_marks_unknown_assets() {
+    asphyxia()
+        .args(["ps", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--classify"));
+    asphyxia()
+        .args(["as", "-t", "127.0.0.1", "--classify", "-o", "jsonl"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"device_type\":\"unknown\""))
+        .stdout(predicate::str::contains("\"device_confidence\":\"low\""));
+}
+
+#[test]
+fn classify_labels_an_unrecognised_open_port_as_unknown() {
+    // An ephemeral port is open but matches no device signature; --classify
+    // must still emit the field as "unknown", never a guessed label.
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().unwrap().port();
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            &port.to_string(),
+            "--classify",
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"device_type\":\"unknown\""));
 }
 
 #[test]

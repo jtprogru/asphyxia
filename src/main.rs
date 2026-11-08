@@ -152,6 +152,8 @@ fn down_record(down: &DownHit) -> ScanRecord {
         reason: Some(down.reason),
         ptr: None,
         ptr_confirmed: None,
+        device_type: None,
+        device_confidence: None,
     }
 }
 
@@ -1040,6 +1042,7 @@ fn main() {
             exclude_cdn,
             udp,
             service_detection,
+            classify,
             resume,
             nmap,
             nmap_args,
@@ -1388,6 +1391,37 @@ fn main() {
 
             pb.finish_with_message("Scan completed");
 
+            // --classify is a pure post-pass over collected results: no extra
+            // probes. Only open ports/banners contribute, so ACK/stealth states
+            // classify as unknown rather than inventing evidence.
+            let classifications: std::collections::HashMap<usize, asphyxia::classify::Device> =
+                if classify {
+                    let mut map = std::collections::HashMap::new();
+                    for (host_index, _) in resolved.iter().enumerate() {
+                        let mut ports = Vec::new();
+                        let mut services = Vec::new();
+                        let mut banners = Vec::new();
+                        for (index, finding) in &results {
+                            if *index == host_index && finding.status == "open" {
+                                ports.push(finding.port);
+                                if let Some(service) = &finding.service {
+                                    services.push(service.as_str());
+                                }
+                                if let Some(banner) = &finding.banner {
+                                    banners.push(banner.as_str());
+                                }
+                            }
+                        }
+                        map.insert(
+                            host_index,
+                            asphyxia::classify::classify_ports(&ports, &services, &banners),
+                        );
+                    }
+                    map
+                } else {
+                    std::collections::HashMap::new()
+                };
+
             match format {
                 OutputFormat::Text => {
                     // An ACK, FIN/NULL/XMAS or UDP scan lists a state for every
@@ -1405,11 +1439,18 @@ fn main() {
                         for (i, f) in &results {
                             let host = &resolved[*i].0;
                             if current != Some(*i) {
-                                println!(
-                                    "\n-- {} for {} --\n",
+                                let mut line = format!(
+                                    "-- {} for {} --",
                                     heading.green(),
                                     host.bright_yellow()
                                 );
+                                if let Some(device) = classifications.get(i) {
+                                    line.push_str(&format!(
+                                        " [{}/{}]",
+                                        device.device_type, device.confidence
+                                    ));
+                                }
+                                println!("\n{}\n", line);
                                 current = Some(*i);
                             }
                             // Base line is host:port; annotate with the status
@@ -1458,6 +1499,8 @@ fn main() {
                             reason: None,
                             ptr: None,
                             ptr_confirmed: None,
+                            device_type: classifications.get(i).map(|d| d.device_type),
+                            device_confidence: classifications.get(i).map(|d| d.confidence),
                         })
                         .collect();
                     if let Err(e) = emit(&records, format, output_file.as_deref()) {
@@ -1494,6 +1537,7 @@ fn main() {
             discovery_ports,
             show_down,
             resolve_ptr,
+            classify,
             exclude,
             exclude_file,
             timeout,
@@ -1706,6 +1750,17 @@ fn main() {
                                     line.push_str(" (unconfirmed)");
                                 }
                             }
+                            if classify {
+                                let device = hit
+                                    .oui
+                                    .as_deref()
+                                    .map(asphyxia::classify::classify_oui)
+                                    .unwrap_or_else(asphyxia::classify::Device::unknown);
+                                line.push_str(&format!(
+                                    " [{}/{}]",
+                                    device.device_type, device.confidence
+                                ));
+                            }
                             println!("{}", line);
                         }
                     } else {
@@ -1753,6 +1808,28 @@ fn main() {
                             reason: None,
                             ptr: hit.ptr.clone(),
                             ptr_confirmed: hit.ptr_confirmed,
+                            device_type: if classify {
+                                Some(
+                                    hit.oui
+                                        .as_deref()
+                                        .map(asphyxia::classify::classify_oui)
+                                        .unwrap_or_else(asphyxia::classify::Device::unknown)
+                                        .device_type,
+                                )
+                            } else {
+                                None
+                            },
+                            device_confidence: if classify {
+                                Some(
+                                    hit.oui
+                                        .as_deref()
+                                        .map(asphyxia::classify::classify_oui)
+                                        .unwrap_or_else(asphyxia::classify::Device::unknown)
+                                        .confidence,
+                                )
+                            } else {
+                                None
+                            },
                         })
                         .collect();
                     if show_down {
