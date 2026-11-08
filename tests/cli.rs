@@ -329,7 +329,7 @@ fn port_scan_csv_emits_header_even_with_no_open_ports() {
         .assert()
         .success()
         .stdout(predicate::eq(
-            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n",
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason\n",
         ));
 }
 
@@ -415,7 +415,7 @@ fn config_supplies_defaults_that_flags_override() {
         .assert()
         .success()
         .stdout(predicate::eq(
-            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n",
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason\n",
         ));
 
     let _ = std::fs::remove_file(&path);
@@ -1427,10 +1427,9 @@ fn output_file_writes_machine_output_and_keeps_stdout_clean() {
         .stdout(predicate::eq(""));
 
     let contents = std::fs::read_to_string(&path).expect("output file should exist");
-    assert!(
-        contents
-            .starts_with("ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n")
-    );
+    assert!(contents.starts_with(
+        "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason\n"
+    ));
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1578,13 +1577,51 @@ fn discovery_arp_ipv6_target_falls_back_to_tcp() {
 }
 
 #[test]
+fn discovery_icmp_runs_or_falls_back_cleanly() {
+    // With root the raw socket answers on loopback; without it the scan warns
+    // and falls back to TCP. Either way the host must be reported up and the
+    // confirming probe named.
+    asphyxia()
+        .args([
+            "as",
+            "-t",
+            "127.0.0.1",
+            "--discovery",
+            "icmp",
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"ip\":\"127.0.0.1\""))
+        .stdout(predicate::str::contains("\"status\":\"up\""))
+        .stdout(
+            predicate::str::contains("\"discovery\":\"icmp\"")
+                .or(predicate::str::contains("\"discovery\":\"tcp\"")),
+        );
+}
+
+#[test]
+fn discovery_icmp_ipv6_target_falls_back_to_tcp() {
+    // ICMP echo discovery is IPv4-only; an IPv6 target must fall back visibly.
+    asphyxia()
+        .args(["as", "-t", "::1", "--discovery", "icmp", "-o", "jsonl"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("ICMP discovery is unavailable"))
+        .stdout(predicate::str::contains("\"ip\":\"::1\""));
+}
+
+#[test]
 fn discovery_flag_is_documented_in_help() {
     asphyxia()
         .args(["as", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("--discovery"))
-        .stdout(predicate::str::contains("arp"));
+        .stdout(predicate::str::contains("arp"))
+        .stdout(predicate::str::contains("icmp"))
+        .stdout(predicate::str::contains("--show-down"));
 }
 
 #[test]

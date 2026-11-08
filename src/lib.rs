@@ -110,6 +110,7 @@ pub use scanner::address::{
 pub use scanner::discovery::arp::{
     ArpHit, MacAddr, arp_probe, arp_probe_with_retries, is_local_ipv4,
 };
+pub use scanner::discovery::icmp::{IcmpProbe, build_echo_request, probe_with_retries};
 pub use scanner::exclude::ExcludeSet;
 pub use scanner::nmap::{nmap_args, run_nmap, split_extra_args};
 /// Re-export commonly used types and functions

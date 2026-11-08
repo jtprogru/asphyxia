@@ -76,6 +76,51 @@ fn minimum_scan_seconds(
     delay_bound.max(rate_bound)
 }
 
+/// A negative host-discovery outcome. Kept out of the default report (only up
+/// hosts are listed) and emitted when `--show-down` asks for it.
+struct DownHit {
+    ip: IpAddr,
+    /// `"unreachable"` for an ICMP destination-unreachable (a fact) or
+    /// `"no-response"` for silence after the retry budget.
+    reason: &'static str,
+}
+
+/// The full outcome of an address scan: the hosts that answered plus the
+/// negative ICMP outcomes, which the caller may choose to include.
+struct DiscoveryReport {
+    up: Vec<address::HostHit>,
+    down: Vec<DownHit>,
+}
+
+impl DiscoveryReport {
+    /// A report with no negative outcomes (TCP, ARP and `-Pn` scans).
+    fn up_only(up: Vec<address::HostHit>) -> Self {
+        Self {
+            up,
+            down: Vec::new(),
+        }
+    }
+}
+
+/// Build the structured record for a negative ICMP outcome. Kept separate so
+/// the `reason`/`status` shape is unit-testable without a raw socket.
+fn down_record(down: &DownHit) -> ScanRecord {
+    ScanRecord {
+        ip: down.ip.to_string(),
+        port: None,
+        proto: "icmp",
+        scan: "icmp",
+        latency_ms: 0,
+        status: "down",
+        service: None,
+        banner: None,
+        discovery: Some("icmp"),
+        mac: None,
+        oui: None,
+        reason: Some(down.reason),
+    }
+}
+
 /// Mark every address as up without probing, for `-Pn` (skip discovery). The
 /// latency is zero since no probe was sent.
 fn all_up(addrs: Vec<IpAddr>) -> Vec<address::HostHit> {
@@ -168,17 +213,19 @@ fn scan_filtered(
     discovery: DiscoveryMode,
     timeout: Option<Duration>,
     retries: u32,
-) -> Vec<address::HostHit> {
+) -> DiscoveryReport {
     let filtered: Vec<IpAddr> = addrs
         .into_iter()
         .filter(|ip| !exclude.contains(*ip))
         .collect();
     if no_discovery {
-        all_up(filtered)
+        DiscoveryReport::up_only(all_up(filtered))
     } else if discovery == DiscoveryMode::Arp {
-        scan_hosts_arp_first(filtered, timeout, retries)
+        DiscoveryReport::up_only(scan_hosts_arp_first(filtered, timeout, retries))
+    } else if discovery == DiscoveryMode::Icmp {
+        scan_hosts_icmp(filtered, timeout, retries)
     } else {
-        address::scan_hosts(filtered, timeout, retries)
+        DiscoveryReport::up_only(address::scan_hosts(filtered, timeout, retries))
     }
 }
 
@@ -245,6 +292,74 @@ fn scan_hosts_arp_first(
 
     hits.sort_by_key(|h| h.ip);
     hits
+}
+
+/// Probe each IPv4 address with an ICMP echo, in parallel through the shared
+/// pool. Hosts that answer become `HostHit`s; an ICMP unreachable and silence
+/// after the retry budget are both negative outcomes (a destination-unreachable
+/// is a fact, silence is its own `no-response` verdict, not the same guess).
+///
+/// If the raw socket is unavailable (no root/`CAP_NET_RAW`, or only IPv6
+/// targets), the whole list falls back to TCP with one warning.
+fn scan_hosts_icmp(addrs: Vec<IpAddr>, timeout: Option<Duration>, retries: u32) -> DiscoveryReport {
+    use asphyxia::scanner::discovery::icmp;
+
+    let timeout = timeout.unwrap_or(Duration::from_millis(2000));
+    if !icmp::prepare(&addrs) {
+        eprintln!(
+            "{}",
+            "ICMP discovery is unavailable for these targets (IPv4 only; needs root/CAP_NET_RAW) — falling back to TCP"
+                .yellow()
+        );
+        return DiscoveryReport::up_only(address::scan_hosts(addrs, Some(timeout), retries));
+    }
+
+    let pb = progress_bar(addrs.len() as u64, "ICMP probes");
+    let probed: Vec<(IpAddr, icmp::IcmpProbe)> = addrs
+        .into_par_iter()
+        .map(|ip| {
+            let outcome = match ip {
+                IpAddr::V4(v4) => icmp::probe_with_retries(v4, timeout, retries),
+                // IPv6 cannot be reached by this IPv4 raw socket; send it to TCP.
+                IpAddr::V6(_) => icmp::IcmpProbe::Unavailable,
+            };
+            pb.inc(1);
+            (ip, outcome)
+        })
+        .collect();
+    pb.finish_with_message("ICMP probing completed");
+
+    let mut up: Vec<address::HostHit> = Vec::new();
+    let mut down: Vec<DownHit> = Vec::new();
+    let mut tcp_fallback: Vec<IpAddr> = Vec::new();
+    for (ip, outcome) in probed {
+        match outcome {
+            icmp::IcmpProbe::Up(latency) => up.push(address::HostHit {
+                ip,
+                latency,
+                discovery: "icmp",
+                mac: None,
+                oui: None,
+            }),
+            // Both are negative, but a destination-unreachable is a fact and
+            // silence is its own verdict. Keep them distinct for --show-down.
+            icmp::IcmpProbe::Unreachable => down.push(DownHit {
+                ip,
+                reason: "unreachable",
+            }),
+            icmp::IcmpProbe::NoResponse => down.push(DownHit {
+                ip,
+                reason: "no-response",
+            }),
+            icmp::IcmpProbe::Unavailable => tcp_fallback.push(ip),
+        }
+    }
+
+    if !tcp_fallback.is_empty() {
+        up.extend(address::scan_hosts(tcp_fallback, Some(timeout), retries));
+    }
+    up.sort_by_key(|h| h.ip);
+    DiscoveryReport { up, down }
 }
 
 /// Map a persisted status string back to the `&'static str` the report uses.
@@ -1103,6 +1218,7 @@ fn main() {
                             discovery: None,
                             mac: None,
                             oui: None,
+                            reason: None,
                         })
                         .collect();
                     if let Err(e) = emit(&records, format, output_file.as_deref()) {
@@ -1136,6 +1252,7 @@ fn main() {
             range,
             no_discovery,
             discovery: discovery_mode,
+            show_down,
             exclude,
             exclude_file,
             timeout,
@@ -1156,7 +1273,7 @@ fn main() {
             // materializes the whole address space.
             let materialize = no_discovery || !exclude_set.is_empty();
 
-            let available: Vec<address::HostHit> = if let Some(subnet_str) = subnet {
+            let available: DiscoveryReport = if let Some(subnet_str) = subnet {
                 match parse_subnet(&subnet_str) {
                     Ok(network) => {
                         if format == OutputFormat::Text {
@@ -1176,13 +1293,17 @@ fn main() {
                                 retries,
                             )
                         } else if discovery_mode == DiscoveryMode::Arp {
-                            scan_hosts_arp_first(
+                            DiscoveryReport::up_only(scan_hosts_arp_first(
                                 address::subnet_addresses(network),
                                 timeout,
                                 retries,
-                            )
+                            ))
+                        } else if discovery_mode == DiscoveryMode::Icmp {
+                            scan_hosts_icmp(address::subnet_addresses(network), timeout, retries)
                         } else {
-                            address::scan_subnet_with_retries(network, timeout, retries)
+                            DiscoveryReport::up_only(address::scan_subnet_with_retries(
+                                network, timeout, retries,
+                            ))
                         }
                     }
                     Err(e) => {
@@ -1210,11 +1331,19 @@ fn main() {
                                 retries,
                             )
                         } else if discovery_mode == DiscoveryMode::Arp {
-                            scan_hosts_arp_first(vec![ip], timeout, retries)
+                            DiscoveryReport::up_only(scan_hosts_arp_first(
+                                vec![ip],
+                                timeout,
+                                retries,
+                            ))
+                        } else if discovery_mode == DiscoveryMode::Icmp {
+                            scan_hosts_icmp(vec![ip], timeout, retries)
                         } else {
-                            address::scan_address_with_retries(ip, timeout, retries)
-                                .into_iter()
-                                .collect()
+                            DiscoveryReport::up_only(
+                                address::scan_address_with_retries(ip, timeout, retries)
+                                    .into_iter()
+                                    .collect(),
+                            )
                         }
                     }
                     Err(e) => {
@@ -1244,13 +1373,17 @@ fn main() {
                                 retries,
                             )
                         } else if discovery_mode == DiscoveryMode::Arp {
-                            scan_hosts_arp_first(
+                            DiscoveryReport::up_only(scan_hosts_arp_first(
                                 address::range_addresses(start, end),
                                 timeout,
                                 retries,
-                            )
+                            ))
+                        } else if discovery_mode == DiscoveryMode::Icmp {
+                            scan_hosts_icmp(address::range_addresses(start, end), timeout, retries)
                         } else {
-                            address::scan_ip_range_with_retries(start, end, timeout, retries)
+                            DiscoveryReport::up_only(address::scan_ip_range_with_retries(
+                                start, end, timeout, retries,
+                            ))
                         }
                     }
                     (Err(e), _) | (_, Err(e)) => {
@@ -1265,9 +1398,9 @@ fn main() {
 
             match format {
                 OutputFormat::Text => {
-                    if !available.is_empty() {
+                    if !available.up.is_empty() {
                         println!("\n-- {} --\n", "Available hosts".green());
-                        for hit in &available {
+                        for hit in &available.up {
                             let mut line = hit.ip.to_string().bright_green().to_string();
                             if let Some(mac) = &hit.mac {
                                 line.push_str(&format!(" {}", mac.as_str().dimmed()));
@@ -1277,19 +1410,35 @@ fn main() {
                     } else {
                         println!("\n{}", "No available hosts found 😕".yellow());
                     }
+                    if show_down && !available.down.is_empty() {
+                        println!("\n-- {} --\n", "Unreachable / no response".yellow());
+                        for down in &available.down {
+                            println!(
+                                "{} {}",
+                                down.ip.to_string().bright_yellow(),
+                                down.reason.dimmed()
+                            );
+                        }
+                    }
 
                     println!("\n##### {} #####\n", "Game Over".bright_red());
                 }
                 _ => {
-                    let records: Vec<ScanRecord> = available
+                    let mut records: Vec<ScanRecord> = available
+                        .up
                         .iter()
                         .map(|hit| ScanRecord {
                             ip: hit.ip.to_string(),
                             port: None,
-                            // An ARP-confirmed host was not probed over TCP.
-                            proto: if hit.discovery == "arp" { "arp" } else { "tcp" },
+                            // ARP/ICMP-confirmed hosts were not probed over TCP.
+                            proto: match hit.discovery {
+                                "arp" => "arp",
+                                "icmp" => "icmp",
+                                _ => "tcp",
+                            },
                             scan: match hit.discovery {
                                 "arp" => "arp",
+                                "icmp" => "icmp",
                                 "none" => "none",
                                 _ => "connect",
                             },
@@ -1300,8 +1449,12 @@ fn main() {
                             discovery: Some(hit.discovery),
                             mac: hit.mac.clone(),
                             oui: hit.oui.clone(),
+                            reason: None,
                         })
                         .collect();
+                    if show_down {
+                        records.extend(available.down.iter().map(down_record));
+                    }
                     if let Err(e) = emit(&records, format, output_file.as_deref()) {
                         eprintln!("{}", format!("Failed to write output: {}", e).red());
                     }
@@ -1346,5 +1499,25 @@ mod tests {
     #[test]
     fn no_delay_and_no_rate_is_zero() {
         assert_eq!(minimum_scan_seconds(0, 100, 1000, 0, 256), 0);
+    }
+
+    #[test]
+    fn down_records_keep_the_reason_distinct() {
+        let unreachable = super::down_record(&super::DownHit {
+            ip: "192.0.2.1".parse().unwrap(),
+            reason: "unreachable",
+        });
+        assert_eq!(unreachable.status, "down");
+        assert_eq!(unreachable.reason, Some("unreachable"));
+        assert_eq!(unreachable.discovery, Some("icmp"));
+        assert_eq!(unreachable.proto, "icmp");
+        assert_eq!(unreachable.scan, "icmp");
+
+        let silent = super::down_record(&super::DownHit {
+            ip: "192.0.2.2".parse().unwrap(),
+            reason: "no-response",
+        });
+        assert_eq!(silent.reason, Some("no-response"));
+        assert_ne!(unreachable.reason, silent.reason);
     }
 }

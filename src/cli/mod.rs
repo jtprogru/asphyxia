@@ -15,6 +15,9 @@ pub enum DiscoveryMode {
     /// ARP requests on the local L2 segment. Finds hosts that silently drop all
     /// TCP probe ports; valid only for locally-connected IPv4 subnets.
     Arp,
+    /// ICMP echo requests (a ping sweep). Finds hosts that drop the TCP probe
+    /// ports but answer ICMP; IPv4 only, needs root/`CAP_NET_RAW`.
+    Icmp,
 }
 
 impl std::fmt::Display for DiscoveryMode {
@@ -29,6 +32,7 @@ impl DiscoveryMode {
         match self {
             DiscoveryMode::Tcp => "tcp",
             DiscoveryMode::Arp => "arp",
+            DiscoveryMode::Icmp => "icmp",
         }
     }
 }
@@ -184,6 +188,9 @@ Examples:
   # Discover hosts by ARP on a local IPv4 subnet (needs root/CAP_NET_RAW)
   asphyxia as -s 192.168.1.0/24 --discovery arp
 
+  # Ping sweep with ICMP echo (IPv4; needs root/CAP_NET_RAW)
+  asphyxia as -s 192.168.1.0/24 --discovery icmp
+
   # Skip host discovery and treat every address as up (like nmap -Pn)
   asphyxia as -s 192.168.1.0/24 --Pn
 
@@ -243,9 +250,11 @@ Required arguments:
     -s, --subnet <SUBNET>        Scan a subnet (e.g., 192.168.1.0/24 or 2001:db8::/120)
     -t, --target <IP>            Scan a specific IP address (IPv4 or IPv6)
     -r, --range <START> <END>    Scan a range of IP addresses
-    --discovery <MODE>           Host-discovery probe: tcp (default) or arp (local IPv4,
-                                 needs root/CAP_NET_RAW + libpcap; else falls back to tcp)
+    --discovery <MODE>           Host-discovery probe: tcp (default), arp (local IPv4,
+                                 needs root/CAP_NET_RAW + libpcap) or icmp (IPv4 ping
+                                 sweep, needs root/CAP_NET_RAW); else falls back to tcp
     --Pn                         Skip host discovery; treat every target as up
+    --show-down                  Include ICMP non-responders as status "down" with a reason
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
     -e, --interface <NAME>       Bind every probe to this interface (e.g. en0), like `ssh -B`
 "#
@@ -419,14 +428,20 @@ pub enum Args {
         #[arg(long = "Pn", visible_alias = "skip-discovery")]
         no_discovery: bool,
 
-        /// Host-discovery probe type: `tcp` (default, unprivileged) or `arp`
-        /// (locally-connected IPv4 subnets; finds hosts that drop all TCP ports).
+        /// Host-discovery probe type: `tcp` (default, unprivileged), `arp`
+        /// (locally-connected IPv4 subnets) or `icmp` (IPv4 ping sweep). ARP and
+        /// ICMP need root/CAP_NET_RAW and fall back to TCP when unavailable.
         #[arg(
             long = "discovery",
             value_name = "MODE",
             default_value_t = DiscoveryMode::Tcp
         )]
         discovery: DiscoveryMode,
+
+        /// Include hosts that did not answer in structured output (status "down",
+        /// reason "unreachable" or "no-response"). ICMP discovery only.
+        #[arg(long = "show-down")]
+        show_down: bool,
 
         /// Exclude these hosts/CIDRs from the scan (repeatable, comma-separated)
         #[arg(long = "exclude", value_name = "SPEC")]

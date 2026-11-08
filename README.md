@@ -23,6 +23,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Port scanning** — scan a range of ports, a specific comma-separated list, the entire port range (`--all-ports`), the N most common ports (`--top-ports`), or a named port set (`--ports web`) on a target host.
 - **Address scanning** — check a single IP, scan an IP range, or scan an entire subnet (CIDR).
 - **ARP host discovery** — `as --discovery arp` finds hosts on a locally-connected IPv4 subnet by ARP, including hosts that silently drop every TCP probe; it reports the MAC address and vendor OUI and falls back to TCP for remote or IPv6 targets.
+- **ICMP ping sweep** — `as --discovery icmp` sends ICMP echo requests to routed IPv4 hosts and reports those that answer, without needing libpcap.
 - **Chainable scans** — pipe the hosts an address scan discovers straight into a port scan with `--stdin`, turning host discovery and port scanning into a single pipeline.
 - **IPv4 and IPv6** — connect and UDP scans accept both address families; raw TCP and ARP modes are IPv4-only and fall back visibly for IPv6.
 - **Configurable timeout** — tune the per-connection timeout with `--timeout`.
@@ -385,6 +386,9 @@ asphyxia as -s 192.168.1.0/24 --timeout 300
 asphyxia as -s 192.168.1.0/24 --discovery arp
 asphyxia as -s 192.168.1.0/24 --discovery arp -o jsonl
 
+# ICMP ping sweep for routed IPv4 hosts (needs root/CAP_NET_RAW)
+asphyxia as -s 192.168.1.0/24 --discovery icmp
+
 # Skip discovery and treat every address as up (like nmap -Pn)
 asphyxia as -s 192.168.1.0/24 --Pn -o jsonl | asphyxia ps --stdin --top-ports 100
 
@@ -399,7 +403,8 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 | `-t, --target <IP>` | Scan a single IPv4 or IPv6 address |
 | `-r, --range <START> <END>` | Scan an inclusive range of IPs (start and end must share the same family) |
 | `--Pn` (`--skip-discovery`) | Skip host discovery and treat every target as up (like nmap `-Pn`) |
-| `--discovery <MODE>` | Host-discovery probe: `tcp` (default, unprivileged) or `arp` (local IPv4; needs root/`CAP_NET_RAW` + libpcap; falls back to TCP otherwise) |
+| `--discovery <MODE>` | Host-discovery probe: `tcp` (default, unprivileged), `arp` (local IPv4; needs root/`CAP_NET_RAW` + libpcap) or `icmp` (IPv4 ping sweep; needs root/`CAP_NET_RAW`). Unsupported cases fall back to TCP. |
+| `--show-down` | With `--discovery icmp`, also emit hosts that did not answer (`status: "down"`, `reason: "unreachable"` or `"no-response"`) instead of listing only live hosts. |
 | `--exclude <SPEC>` | Exclude hosts/CIDRs from the scan (repeatable; each value may be comma-separated) |
 | `--exclude-file <PATH>` | Exclude hosts/CIDRs listed in a file (one per line; `#` comments allowed) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
@@ -437,9 +442,31 @@ How it behaves:
 - **Output** — ARP-confirmed hosts carry `discovery: "arp"`, `proto: "arp"`, `scan: "arp"`, and the `mac`/`oui` fields; text output shows the MAC next to the address. `-Pn` records use `discovery: "none"` and `scan: "none"`, since no probe was sent.
 - **Debugging** — set `ASPHYXIA_ARP_DEBUG=1` to print the chosen interface, MAC, capture status, and each reply to stderr.
 
+#### ICMP echo discovery (`--discovery icmp`)
+
+An ICMP echo request (ping) reaches routed IPv4 hosts that answer ICMP even when they drop every TCP probe. `--discovery icmp` runs a parallel ping sweep:
+
+```bash
+# Ping sweep a routed subnet (needs root/CAP_NET_RAW)
+sudo asphyxia as -s 10.20.0.0/24 --discovery icmp
+
+# Machine-readable result names the confirming probe
+asphyxia as -s 10.20.0.0/24 --discovery icmp -o jsonl
+# {"ip":"10.20.0.7","proto":"icmp","scan":"icmp","latency_ms":3,"status":"up","discovery":"icmp"}
+```
+
+How it behaves:
+
+- **IPv4 only, raw socket** — ICMP mode needs root or `CAP_NET_RAW`. It does not need libpcap. IPv6 targets and a missing raw socket fall back to TCP with one warning.
+- **Reply matching** — each probe carries a unique ICMP sequence number; echo replies are matched by that sequence, and the identifier is ignored because some kernels rewrite it for raw sockets.
+- **Unreachable vs silence** — an ICMP destination-unreachable is a fact that the host is not reachable; silence after `--retries` is a separate `no-response` verdict, not the same guess. Neither is silently reinterpreted as a TCP result. Add `--show-down` to include both in structured output as `status: "down"` records with a `reason`; without it, only live hosts are listed.
+- **Interface and pacing** — `-e/--interface` pins the raw socket, and every request passes through the same `--rate`/`--delay` pacer. Probes run in parallel.
+- **ICMP may be blocked** — some networks drop pings entirely; that is not evidence a host is down. Use `--discovery tcp` or `arp` where ICMP is filtered, or combine probes once combined discovery lands.
+- **Debugging** — set `ASPHYXIA_ICMP_DEBUG=1` to print replies and receive errors to stderr.
+
 ### Machine-readable output (`--output`)
 
-By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto` (`tcp`, `udp`, or `arp`), `scan` (the probe that produced it: `connect`, `syn`, `ack`, `fin`, `null`, `xmas`, `arp`, or `none` for `-Pn`), `latency_ms`, and `status`, plus the optional enrichment fields `service`, `banner`, `discovery`, `mac`, and `oui` when they are known. JSON/JSON Lines omit unknown enrichment; CSV always has all eleven columns; grep emits them tab-separated after `latency_ms`, so the original first six columns keep their positions.
+By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto` (`tcp`, `udp`, `arp`, or `icmp`), `scan` (the probe that produced it: `connect`, `syn`, `ack`, `fin`, `null`, `xmas`, `arp`, `icmp`, or `none` for `-Pn`), `latency_ms`, and `status`, plus the optional enrichment/reason fields `service`, `banner`, `discovery`, `mac`, `oui`, and `reason` when they are known. JSON/JSON Lines omit unknown fields; CSV always has all twelve columns; grep emits them tab-separated after `latency_ms`, so the original first six columns keep their positions.
 
 ```bash
 # One JSON object per open port, on its own line (JSON Lines)
@@ -449,7 +476,7 @@ asphyxia ps -t example.com -s 22,80,443 -o jsonl
 # A single JSON array of available hosts
 asphyxia as -s 192.168.1.0/24 -o json
 
-# CSV with a header row (ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui)
+# CSV with a header row (ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason)
 asphyxia ps -t example.com --top-ports 100 -o csv
 
 # Greppable, tab-separated columns for grep/awk/cut

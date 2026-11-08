@@ -27,7 +27,7 @@ pub enum OutputFormat {
     Json,
     /// JSON Lines: one [`ScanRecord`] object per line.
     Jsonl,
-    /// CSV with a header row (`ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui`).
+    /// CSV with a header row (`ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason`).
     Csv,
     /// Greppable plain text: one tab-separated line per result.
     Grep,
@@ -66,7 +66,7 @@ pub struct ScanRecord {
     /// The observed state: `"open"` or `"open|filtered"` for a port scan (the
     /// latter also from FIN/NULL/XMAS silence), `"closed"` from the stealth
     /// family, `"unfiltered"`/`"filtered"` for an ACK scan, `"up"` for an
-    /// available host.
+    /// available host, or `"down"` for a `--show-down` ICMP non-responder.
     pub status: &'static str,
     /// Detected service (from `--sV`), omitted when unknown or not requested.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,6 +87,11 @@ pub struct ScanRecord {
     /// a raw prefix, not a vendor-name lookup.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oui: Option<String>,
+    /// Why a host was reported down: `"unreachable"` (an ICMP
+    /// destination-unreachable is a fact) or `"no-response"` (silence after the
+    /// retry budget). Only present for `--show-down` records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
 }
 
 /// Render `records` in a machine-readable `format` into a single string.
@@ -128,12 +133,13 @@ fn csv_field(value: &str) -> String {
 /// CSV with a fixed header. The `port` column is empty for host-discovery
 /// records, which have no port; enrichment columns are empty when not collected.
 fn render_csv(records: &[ScanRecord]) -> String {
-    let mut out =
-        String::from("ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n");
+    let mut out = String::from(
+        "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason\n",
+    );
     for r in records {
         let port = r.port.map(|p| p.to_string()).unwrap_or_default();
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_field(&r.ip),
             port,
             r.proto,
@@ -145,6 +151,7 @@ fn render_csv(records: &[ScanRecord]) -> String {
             r.discovery.unwrap_or(""),
             csv_field(r.mac.as_deref().unwrap_or("")),
             csv_field(r.oui.as_deref().unwrap_or("")),
+            r.reason.unwrap_or(""),
         ));
     }
     out
@@ -152,9 +159,9 @@ fn render_csv(records: &[ScanRecord]) -> String {
 
 /// Greppable plain text: one tab-separated line per result, no header, so it
 /// slots straight into `grep`/`awk`/`cut` pipelines. The port column is `-`
-/// for host-discovery records. The five enrichment columns after `latency_ms`
-/// are empty when not collected, so the original first six columns keep their
-/// positions.
+/// for host-discovery records. The six enrichment/reason columns after
+/// `latency_ms` are empty when not collected, so the original first six columns
+/// keep their positions.
 fn render_grep(records: &[ScanRecord]) -> String {
     let mut out = String::new();
     for r in records {
@@ -163,7 +170,7 @@ fn render_grep(records: &[ScanRecord]) -> String {
             .map(|p| p.to_string())
             .unwrap_or_else(|| "-".to_string());
         out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             r.ip,
             port,
             r.proto,
@@ -175,6 +182,7 @@ fn render_grep(records: &[ScanRecord]) -> String {
             r.discovery.unwrap_or(""),
             r.mac.as_deref().unwrap_or(""),
             r.oui.as_deref().unwrap_or(""),
+            r.reason.unwrap_or(""),
         ));
     }
     out
@@ -224,6 +232,7 @@ mod tests {
                 discovery: None,
                 mac: None,
                 oui: None,
+                reason: None,
             },
             ScanRecord {
                 ip: "10.0.0.5".to_string(),
@@ -237,6 +246,7 @@ mod tests {
                 discovery: None,
                 mac: None,
                 oui: None,
+                reason: None,
             },
         ]
     }
@@ -247,21 +257,21 @@ mod tests {
         let mut lines = out.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui"
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason"
         );
         assert_eq!(
             lines.next().unwrap(),
-            "127.0.0.1,80,tcp,connect,open,3,,,,,"
+            "127.0.0.1,80,tcp,connect,open,3,,,,,,"
         );
         // Host-discovery record has an empty port column.
-        assert_eq!(lines.next().unwrap(), "10.0.0.5,,tcp,connect,up,12,,,,,");
+        assert_eq!(lines.next().unwrap(), "10.0.0.5,,tcp,connect,up,12,,,,,,");
     }
 
     #[test]
     fn empty_csv_still_has_header() {
         assert_eq!(
             render(&[], OutputFormat::Csv),
-            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n"
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason\n"
         );
     }
 
@@ -271,11 +281,11 @@ mod tests {
         let mut lines = out.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "127.0.0.1\t80\ttcp\tconnect\topen\t3\t\t\t\t\t"
+            "127.0.0.1\t80\ttcp\tconnect\topen\t3\t\t\t\t\t\t"
         );
         assert_eq!(
             lines.next().unwrap(),
-            "10.0.0.5\t-\ttcp\tconnect\tup\t12\t\t\t\t\t"
+            "10.0.0.5\t-\ttcp\tconnect\tup\t12\t\t\t\t\t\t"
         );
     }
 
@@ -298,7 +308,7 @@ mod tests {
         emit(&sample(), OutputFormat::Csv, Some(&path)).expect("write should succeed");
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.starts_with(
-            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n"
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason\n"
         ));
         let _ = std::fs::remove_file(&path);
     }
@@ -320,6 +330,7 @@ mod tests {
                 discovery: None,
                 mac: None,
                 oui: None,
+                reason: None,
             },
             ScanRecord {
                 ip: "192.0.2.10".to_string(),
@@ -333,11 +344,12 @@ mod tests {
                 discovery: None,
                 mac: None,
                 oui: None,
+                reason: None,
             },
         ];
         let csv = render(&records, OutputFormat::Csv);
-        assert!(csv.contains("192.0.2.10,22,tcp,ack,unfiltered,4,,,,,\n"));
-        assert!(csv.contains("192.0.2.10,23,tcp,ack,filtered,2000,,,,,\n"));
+        assert!(csv.contains("192.0.2.10,22,tcp,ack,unfiltered,4,,,,,,\n"));
+        assert!(csv.contains("192.0.2.10,23,tcp,ack,filtered,2000,,,,,,\n"));
 
         let json = render(&records, OutputFormat::Json);
         assert!(json.contains("\"scan\":\"ack\""));
@@ -345,7 +357,7 @@ mod tests {
         assert!(!json.contains("\"status\":\"open\""));
 
         let grep = render(&records, OutputFormat::Grep);
-        assert!(grep.contains("192.0.2.10\t22\ttcp\tack\tunfiltered\t4\t\t\t\t\t\n"));
+        assert!(grep.contains("192.0.2.10\t22\ttcp\tack\tunfiltered\t4\t\t\t\t\t\t\n"));
     }
 
     #[test]
@@ -365,6 +377,7 @@ mod tests {
                 discovery: None,
                 mac: None,
                 oui: None,
+                reason: None,
             },
             ScanRecord {
                 ip: "192.0.2.10".to_string(),
@@ -378,6 +391,7 @@ mod tests {
                 discovery: None,
                 mac: None,
                 oui: None,
+                reason: None,
             },
             ScanRecord {
                 ip: "192.0.2.10".to_string(),
@@ -391,12 +405,13 @@ mod tests {
                 discovery: None,
                 mac: None,
                 oui: None,
+                reason: None,
             },
         ];
         let csv = render(&records, OutputFormat::Csv);
-        assert!(csv.contains("192.0.2.10,22,tcp,fin,closed,4,,,,,\n"));
-        assert!(csv.contains("192.0.2.10,23,tcp,null,open|filtered,2000,,,,,\n"));
-        assert!(csv.contains("192.0.2.10,24,tcp,xmas,open|filtered,2000,,,,,\n"));
+        assert!(csv.contains("192.0.2.10,22,tcp,fin,closed,4,,,,,,\n"));
+        assert!(csv.contains("192.0.2.10,23,tcp,null,open|filtered,2000,,,,,,\n"));
+        assert!(csv.contains("192.0.2.10,24,tcp,xmas,open|filtered,2000,,,,,,\n"));
 
         let json = render(&records, OutputFormat::Json);
         for scan in ["fin", "null", "xmas"] {
@@ -408,7 +423,7 @@ mod tests {
         assert!(!json.contains("\"status\":\"open\""));
 
         let grep = render(&records, OutputFormat::Grep);
-        assert!(grep.contains("192.0.2.10\t22\ttcp\tfin\tclosed\t4\t\t\t\t\t\n"));
+        assert!(grep.contains("192.0.2.10\t22\ttcp\tfin\tclosed\t4\t\t\t\t\t\t\n"));
     }
 
     #[test]
@@ -425,18 +440,19 @@ mod tests {
             discovery: Some("arp"),
             mac: Some("aa:bb:cc:dd:ee:ff".to_string()),
             oui: Some("aa-bb-cc".to_string()),
+            reason: None,
         }];
         let csv = render(&records, OutputFormat::Csv);
         assert!(
             csv.contains(
-                "192.0.2.5,,arp,arp,up,2,http,\"HTTP/1.1 200 OK, \"\"ok\"\"\",arp,aa:bb:cc:dd:ee:ff,aa-bb-cc\n"
+                "192.0.2.5,,arp,arp,up,2,http,\"HTTP/1.1 200 OK, \"\"ok\"\"\",arp,aa:bb:cc:dd:ee:ff,aa-bb-cc,\n"
             ),
             "{csv}"
         );
         let grep = render(&records, OutputFormat::Grep);
         assert!(
             grep.contains(
-                "192.0.2.5\t-\tarp\tarp\tup\t2\thttp\tHTTP/1.1 200 OK, \"ok\"\tarp\taa:bb:cc:dd:ee:ff\taa-bb-cc\n"
+                "192.0.2.5\t-\tarp\tarp\tup\t2\thttp\tHTTP/1.1 200 OK, \"ok\"\tarp\taa:bb:cc:dd:ee:ff\taa-bb-cc\t\n"
             ),
             "{grep}"
         );

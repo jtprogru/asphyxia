@@ -41,7 +41,7 @@ use std::time::Duration;
     target_os = "illumos",
     target_os = "solaris",
 ))]
-pub use imp::{install, requested, tcp_connect_timeout, udp_connect};
+pub use imp::{bind_raw, install, requested, tcp_connect_timeout, udp_connect};
 
 #[cfg(not(any(
     target_os = "android",
@@ -55,7 +55,7 @@ pub use imp::{install, requested, tcp_connect_timeout, udp_connect};
     target_os = "illumos",
     target_os = "solaris",
 )))]
-pub use stub::{install, requested, tcp_connect_timeout, udp_connect};
+pub use stub::{bind_raw, install, requested, tcp_connect_timeout, udp_connect};
 
 // ---------------------------------------------------------------------------
 // Supported platforms: resolve the interface and set the bind-to-device option.
@@ -122,6 +122,16 @@ mod imp {
     /// The name of the installed interface, if any, for diagnostics.
     pub fn requested() -> Option<&'static str> {
         IFACE.get().map(|b| b.name.as_str())
+    }
+
+    /// Pin an already-created raw socket to the installed interface, if any.
+    /// Used by the ICMP discovery socket, which `socket2` does not open through
+    /// [`tcp_connect_timeout`] or [`udp_connect`].
+    pub fn bind_raw(socket: &Socket, ipv4: bool) -> io::Result<()> {
+        match IFACE.get() {
+            Some(bound) => apply(socket, bound, ipv4),
+            None => Ok(()),
+        }
     }
 
     /// Open a TCP connection to `addr` within `timeout`, first pinning the
@@ -315,6 +325,11 @@ mod stub {
     /// No interface can be installed on this platform.
     pub fn requested() -> Option<&'static str> {
         None
+    }
+
+    /// No raw socket can be bound on this platform.
+    pub fn bind_raw(_socket: &socket2::Socket, _ipv4: bool) -> io::Result<()> {
+        Ok(())
     }
 
     /// Plain connect: no interface can be bound on this platform.
