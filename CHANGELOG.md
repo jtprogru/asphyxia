@@ -11,6 +11,12 @@ All notable changes to Asphyxia are documented here. The format follows
 - FIN/NULL/XMAS scans now report `filtered` when an ICMP unreachable rejects
   the probe, instead of merging that answer into `open|filtered`.
 
+### Changed
+
+- `--top-ports` is now generated from the real `nmap-services` TCP frequency
+  order instead of a hand-padded table; the first 1000 ports are the actual
+  nmap top-1000 set.
+
 ## [0.11.0] - 2026-11-08
 
 This release completes the network-reconnaissance roadmap: discovery beyond
