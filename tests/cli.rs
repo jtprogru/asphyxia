@@ -1635,6 +1635,57 @@ fn discovery_arp_on_non_local_target_falls_back_to_tcp() {
 }
 
 #[test]
+fn discovery_combined_degrades_and_still_scans() {
+    // On loopback ARP is skipped (no L2 segment) and, without root, ICMP warns
+    // and is skipped too; TCP still has to report the host. With root ICMP may
+    // win instead. Either way the scan succeeds and names a confirming probe.
+    asphyxia()
+        .args([
+            "as",
+            "-t",
+            "127.0.0.1",
+            "--discovery",
+            "arp,icmp,tcp",
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"ip\":\"127.0.0.1\""))
+        .stdout(
+            predicate::str::contains("\"discovery\":\"tcp\"")
+                .or(predicate::str::contains("\"discovery\":\"icmp\""))
+                .or(predicate::str::contains("\"discovery\":\"arp\"")),
+        );
+}
+
+#[test]
+fn discovery_auto_logs_its_choice() {
+    asphyxia()
+        .args([
+            "as",
+            "-t",
+            "127.0.0.1",
+            "--discovery",
+            "auto",
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("discovery auto: arp,icmp,tcp"));
+}
+
+#[test]
+fn discovery_auto_rejects_explicit_probes() {
+    asphyxia()
+        .args(["as", "-t", "127.0.0.1", "--discovery", "auto,tcp"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be combined"));
+}
+
+#[test]
 fn discovery_ports_are_accepted_and_documented() {
     asphyxia()
         .args([

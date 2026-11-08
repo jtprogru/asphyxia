@@ -24,6 +24,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Address scanning** — check a single IP, scan an IP range, or scan an entire subnet (CIDR).
 - **ARP host discovery** — `as --discovery arp` finds hosts on a locally-connected IPv4 subnet by ARP, including hosts that silently drop every TCP probe; it reports the MAC address and vendor OUI and falls back to TCP for remote or IPv6 targets.
 - **ICMP ping sweep** — `as --discovery icmp` sends ICMP echo requests to routed IPv4 hosts and reports those that answer, without needing libpcap.
+- **Combined discovery** — `--discovery arp,icmp,tcp` tries several probes per host (or `auto` for ARP → ICMP → TCP), names the probe that confirmed each host, and degrades unavailable probes to warnings instead of failing the scan.
 - **Chainable scans** — pipe the hosts an address scan discovers straight into a port scan with `--stdin`, turning host discovery and port scanning into a single pipeline.
 - **IPv4 and IPv6** — connect and UDP scans accept both address families; raw TCP and ARP modes are IPv4-only and fall back visibly for IPv6.
 - **Configurable timeout** — tune the per-connection timeout with `--timeout`.
@@ -392,6 +393,10 @@ asphyxia as -s 192.168.1.0/24 --discovery icmp
 # Probe a custom set of TCP ports for host discovery
 asphyxia as -s 192.168.1.0/24 --discovery-ports 445,3389,8080
 
+# Try several probes per host; the first one that answers confirms it
+asphyxia as -s 192.168.1.0/24 --discovery arp,icmp,tcp
+asphyxia as -s 10.0.0.0/24 --discovery auto
+
 # Skip discovery and treat every address as up (like nmap -Pn)
 asphyxia as -s 192.168.1.0/24 --Pn -o jsonl | asphyxia ps --stdin --top-ports 100
 
@@ -406,7 +411,7 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 | `-t, --target <IP>` | Scan a single IPv4 or IPv6 address |
 | `-r, --range <START> <END>` | Scan an inclusive range of IPs (start and end must share the same family) |
 | `--Pn` (`--skip-discovery`) | Skip host discovery and treat every target as up (like nmap `-Pn`) |
-| `--discovery <MODE>` | Host-discovery probe: `tcp` (default, unprivileged), `arp` (local IPv4; needs root/`CAP_NET_RAW` + libpcap) or `icmp` (IPv4 ping sweep; needs root/`CAP_NET_RAW`). Unsupported cases fall back to TCP. |
+| `--discovery <MODES>` | Host-discovery probe(s): `tcp` (default, unprivileged), `arp` (local IPv4; needs root/`CAP_NET_RAW` + libpcap), `icmp` (IPv4 ping sweep; needs root/`CAP_NET_RAW`), a comma-separated combination such as `arp,icmp,tcp`, or `auto` (ARP → ICMP → TCP). Probes that cannot run are skipped with a warning; the first probe that answers confirms the host. |
 | `--discovery-ports <PORTS>` | Comma-separated TCP ports used by host discovery (default `80,443,22,3389`); a wider set finds hosts that firewall the defaults, at a linear time cost. Also used by the TCP fallback of `arp`/`icmp`. |
 | `--show-down` | With `--discovery icmp`, also emit hosts that did not answer (`status: "down"`, `reason: "unreachable"` or `"no-response"`) instead of listing only live hosts. |
 | `--exclude <SPEC>` | Exclude hosts/CIDRs from the scan (repeatable; each value may be comma-separated) |
@@ -467,6 +472,24 @@ How it behaves:
 - **Interface and pacing** — `-e/--interface` pins the raw socket, and every request passes through the same `--rate`/`--delay` pacer. Probes run in parallel.
 - **ICMP may be blocked** — some networks drop pings entirely; that is not evidence a host is down. Use `--discovery tcp` or `arp` where ICMP is filtered, or combine probes once combined discovery lands.
 - **Debugging** — set `ASPHYXIA_ICMP_DEBUG=1` to print replies and receive errors to stderr.
+
+#### Combined discovery (`--discovery arp,icmp,tcp` / `auto`)
+
+One probe can miss a host the others see: ARP only works on the local L2 segment, ICMP may be filtered, and TCP may hit firewalled ports. Pass a comma-separated list to try several probes per address, in order, and stop at the first positive answer:
+
+```bash
+# Local IPv4: ARP first, then ICMP, then the TCP fallback
+sudo asphyxia as -s 192.168.1.0/24 --discovery arp,icmp,tcp
+
+# Let asphyxia choose the broadest sensible order
+asphyxia as -s 10.0.0.0/24 --discovery auto
+```
+
+- **First positive wins** — each host is reported once, with `discovery` naming the probe that confirmed it (`arp`, `icmp`, or `tcp`), plus the MAC/OUI when ARP supplied them.
+- **Unavailable probes degrade** — ARP is skipped when no target is on a local IPv4 subnet; ARP/ICMP are skipped with a warning when root/`CAP_NET_RAW` (or, for ARP, libpcap) is missing. The remaining probes still run, and a plan that loses every raw probe falls back to TCP rather than failing the scan.
+- **Negative outcomes** — ICMP's `unreachable`/`no-response` verdict is remembered if no later probe finds the host, and `--show-down` emits it. A later TCP success wins, so a host that blocks ICMP but answers TCP is still reported up.
+- **Shared budget** — every probe in the plan passes through the same `--rate`/`--delay` pacer and the same concurrency pool; there is no per-probe budget.
+- **`auto` is opt-in** — the default remains the unprivileged `tcp` probe. `auto` must stand alone (`--discovery auto,tcp` is rejected) and logs its resolved order to stderr.
 
 ### Machine-readable output (`--output`)
 

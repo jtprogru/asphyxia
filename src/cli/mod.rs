@@ -18,6 +18,9 @@ pub enum DiscoveryMode {
     /// ICMP echo requests (a ping sweep). Finds hosts that drop the TCP probe
     /// ports but answer ICMP; IPv4 only, needs root/`CAP_NET_RAW`.
     Icmp,
+    /// Try ARP, then ICMP, then TCP, skipping probes that cannot run. Only
+    /// valid on its own; resolved before the scan starts.
+    Auto,
 }
 
 impl std::fmt::Display for DiscoveryMode {
@@ -33,6 +36,7 @@ impl DiscoveryMode {
             DiscoveryMode::Tcp => "tcp",
             DiscoveryMode::Arp => "arp",
             DiscoveryMode::Icmp => "icmp",
+            DiscoveryMode::Auto => "auto",
         }
     }
 }
@@ -253,9 +257,9 @@ Required arguments:
     -s, --subnet <SUBNET>        Scan a subnet (e.g., 192.168.1.0/24 or 2001:db8::/120)
     -t, --target <IP>            Scan a specific IP address (IPv4 or IPv6)
     -r, --range <START> <END>    Scan a range of IP addresses
-    --discovery <MODE>           Host-discovery probe: tcp (default), arp (local IPv4,
-                                 needs root/CAP_NET_RAW + libpcap) or icmp (IPv4 ping
-                                 sweep, needs root/CAP_NET_RAW); else falls back to tcp
+    --discovery <MODES>          Host-discovery probe(s): tcp (default), arp, icmp,
+                                 or a comma-separated combination (arp,icmp,tcp);
+                                 auto tries arp,icmp,tcp. Raw probes need root/CAP_NET_RAW
     --Pn                         Skip host discovery; treat every target as up
     --discovery-ports <PORTS>    Comma-separated TCP ports for host discovery (default 80,443,22,3389)
     --show-down                  Include ICMP non-responders as status "down" with a reason
@@ -432,15 +436,18 @@ pub enum Args {
         #[arg(long = "Pn", visible_alias = "skip-discovery")]
         no_discovery: bool,
 
-        /// Host-discovery probe type: `tcp` (default, unprivileged), `arp`
-        /// (locally-connected IPv4 subnets) or `icmp` (IPv4 ping sweep). ARP and
-        /// ICMP need root/CAP_NET_RAW and fall back to TCP when unavailable.
+        /// Host-discovery probe(s): `tcp` (default, unprivileged), `arp`
+        /// (locally-connected IPv4 subnets), `icmp` (IPv4 ping sweep), or a
+        /// comma-separated combination such as `arp,icmp,tcp`. `auto` tries
+        /// ARP, ICMP and TCP in that order. ARP/ICMP need root/CAP_NET_RAW;
+        /// probes that cannot run degrade to a warning and the next probe.
         #[arg(
             long = "discovery",
-            value_name = "MODE",
-            default_value_t = DiscoveryMode::Tcp
+            value_name = "MODES",
+            value_delimiter = ',',
+            default_value = "tcp"
         )]
-        discovery: DiscoveryMode,
+        discovery: Vec<DiscoveryMode>,
 
         /// Comma-separated TCP ports used for host discovery (default: 80,443,22,3389)
         #[arg(long = "discovery-ports", value_name = "PORTS")]
