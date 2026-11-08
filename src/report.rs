@@ -126,6 +126,31 @@ fn render_markdown(records: &[ScanRecord], meta: &ReportMeta<'_>, full: bool) ->
     out.push_str("## Hosts\n\n");
     for (ip, rows) in by_host(records) {
         out.push_str(&format!("### {ip}\n\n"));
+        let first = rows[0];
+        if let Some(mac) = &first.mac {
+            out.push_str(&format!("- **MAC:** {}\n", escape_md(mac)));
+        }
+        if let Some(ptr) = &first.ptr {
+            let confirmed = match first.ptr_confirmed {
+                Some(true) => "confirmed",
+                Some(false) => "unconfirmed",
+                None => "unknown",
+            };
+            out.push_str(&format!("- **PTR:** {} ({confirmed})\n", escape_md(ptr)));
+        }
+        if let Some(asn) = first.asn {
+            out.push_str(&format!(
+                "- **ASN:** AS{}{}\n",
+                asn,
+                first
+                    .cloud
+                    .map(|cloud| format!(" ({cloud})"))
+                    .unwrap_or_default()
+            ));
+        }
+        if first.mac.is_some() || first.ptr.is_some() || first.asn.is_some() {
+            out.push('\n');
+        }
         out.push_str("| Port | Proto | Status | Service | Device | Banner |\n");
         out.push_str("|---:|---|---|---|---|---|\n");
         for record in rows {
@@ -194,6 +219,39 @@ fn render_html(records: &[ScanRecord], meta: &ReportMeta<'_>, full: bool) -> Str
 
     for (ip, rows) in by_host(records) {
         out.push_str(&format!("<h3>{}</h3>\n", escape_html(ip)));
+        let first = rows[0];
+        let mut details = Vec::new();
+        if let Some(mac) = &first.mac {
+            details.push(format!("<strong>MAC:</strong> {}", escape_html(mac)));
+        }
+        if let Some(ptr) = &first.ptr {
+            let confirmed = match first.ptr_confirmed {
+                Some(true) => "confirmed",
+                Some(false) => "unconfirmed",
+                None => "unknown",
+            };
+            details.push(format!(
+                "<strong>PTR:</strong> {} ({confirmed})",
+                escape_html(ptr)
+            ));
+        }
+        if let Some(asn) = first.asn {
+            details.push(format!(
+                "<strong>ASN:</strong> AS{}{}",
+                asn,
+                first
+                    .cloud
+                    .map(|cloud| format!(" ({})", escape_html(cloud)))
+                    .unwrap_or_default()
+            ));
+        }
+        if !details.is_empty() {
+            out.push_str("<ul>");
+            for detail in details {
+                out.push_str(&format!("<li>{detail}</li>"));
+            }
+            out.push_str("</ul>\n");
+        }
         out.push_str("<table><thead><tr><th>Port</th><th>Proto</th><th>Status</th><th>Service</th><th>Device</th><th>Banner</th></tr></thead><tbody>\n");
         for record in rows {
             out.push_str(&format!(
