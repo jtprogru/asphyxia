@@ -1,11 +1,11 @@
 # Задачи дорожной карты разведки
 
-Разбивка `docs/recon-roadmap.md` на задачи. Все задачи роадмапа 01–16 выполнены (ветка feat/recon-roadmap). Порядок реализации — в таблице роадмапа.
+Разбивка `docs/recon-roadmap.md` на задачи. Все задачи роадмапа 01–16 выполнены (ветка feat/recon-roadmap), кроме явно отмеченных ограничений в задачах 02 и 16. Порядок реализации — в таблице роадмапа.
 
 ## Фаза 1 — Расширение семейства сканирований
 
 - [x] [01](01-ack-scan.md) — ACK-скан (состояние фаервола: `unfiltered`/`filtered`)
-- [x] [02](02-fin-null-xmas-scans.md) — сканы FIN / NULL / XMAS
+- [x] [02](02-fin-null-xmas-scans.md) — сканы FIN / NULL / XMAS (с ограничением: `filtered` по ICMP unreachable не реализован)
 - [x] [03](03-udp-service-probes.md) — UDP-пробирование сервисов (DNS/SNMP/NTP, ICMP unreachable)
 - [x] [04](04-source-port.md) — настраиваемый source-порт
 - [x] [05](05-delay-jitter.md) — задержка и джиттер на хост

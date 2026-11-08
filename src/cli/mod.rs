@@ -256,7 +256,7 @@ Examples:
   # Save machine-readable output to a file instead of stdout
   asphyxia ps -t example.com --top-ports 1000 -o csv --output-file scan.csv
 
-Required arguments:
+Common arguments:
   For port scanning (ps):
     -t, --host <HOST>    Target host to scan (e.g., example.com)
     --stdin              Read targets from stdin instead of -t (one host per line, or
