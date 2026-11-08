@@ -5,6 +5,34 @@ use clap::{ArgGroup, Parser, ValueEnum};
 use crate::output::OutputFormat;
 use crate::scanner::syn::ProbeMode;
 
+/// The host-discovery probe used by `as`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum DiscoveryMode {
+    /// TCP connect probes across a small spread of common ports (default).
+    /// Unprivileged and works for any reachable address.
+    #[default]
+    Tcp,
+    /// ARP requests on the local L2 segment. Finds hosts that silently drop all
+    /// TCP probe ports; valid only for locally-connected IPv4 subnets.
+    Arp,
+}
+
+impl std::fmt::Display for DiscoveryMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label())
+    }
+}
+
+impl DiscoveryMode {
+    /// Stable name for this mode in structured output and messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            DiscoveryMode::Tcp => "tcp",
+            DiscoveryMode::Arp => "arp",
+        }
+    }
+}
+
 /// Which probe a port scan sends, and hence which port states it can report.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum ScanMode {
@@ -153,6 +181,9 @@ Examples:
   # Scan a range of IP addresses
   asphyxia as -r 192.168.1.1 192.168.1.20
 
+  # Discover hosts by ARP on a local IPv4 subnet (needs root/CAP_NET_RAW)
+  asphyxia as -s 192.168.1.0/24 --discovery arp
+
   # Skip host discovery and treat every address as up (like nmap -Pn)
   asphyxia as -s 192.168.1.0/24 --Pn
 
@@ -212,6 +243,8 @@ Required arguments:
     -s, --subnet <SUBNET>        Scan a subnet (e.g., 192.168.1.0/24 or 2001:db8::/120)
     -t, --target <IP>            Scan a specific IP address (IPv4 or IPv6)
     -r, --range <START> <END>    Scan a range of IP addresses
+    --discovery <MODE>           Host-discovery probe: tcp (default) or arp (local IPv4,
+                                 needs root/CAP_NET_RAW + libpcap; else falls back to tcp)
     --Pn                         Skip host discovery; treat every target as up
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
     -e, --interface <NAME>       Bind every probe to this interface (e.g. en0), like `ssh -B`
@@ -390,6 +423,15 @@ pub enum Args {
         /// Skip host discovery and treat every target as up (like nmap -Pn)
         #[arg(long = "Pn", visible_alias = "skip-discovery")]
         no_discovery: bool,
+
+        /// Host-discovery probe type: `tcp` (default, unprivileged) or `arp`
+        /// (locally-connected IPv4 subnets; finds hosts that drop all TCP ports).
+        #[arg(
+            long = "discovery",
+            value_name = "MODE",
+            default_value_t = DiscoveryMode::Tcp
+        )]
+        discovery: DiscoveryMode,
 
         /// Exclude these hosts/CIDRs from the scan (repeatable, comma-separated)
         #[arg(long = "exclude", value_name = "SPEC")]

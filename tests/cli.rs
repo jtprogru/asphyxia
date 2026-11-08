@@ -1530,3 +1530,71 @@ fn config_interface_is_validated_too() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn discovery_arp_runs_on_loopback_and_falls_back_cleanly() {
+    // ARP on loopback: there is no L2 segment, so the probe falls back to TCP
+    // with a visible warning. The scan must still succeed and report the host
+    // as up, with `discovery` naming the confirming probe.
+    asphyxia()
+        .args(["as", "-t", "127.0.0.1", "--discovery", "arp", "-o", "jsonl"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("ARP discovery is unavailable"))
+        .stdout(predicate::str::contains("\"ip\":\"127.0.0.1\""))
+        .stdout(predicate::str::contains("\"status\":\"up\""))
+        .stdout(predicate::str::contains("\"discovery\":\"tcp\""))
+        .stdout(predicate::str::contains("\"proto\":\"tcp\""));
+}
+
+#[test]
+fn discovery_arp_ipv6_target_falls_back_to_tcp() {
+    // ARP is IPv4-only; an IPv6 target must fall back to the TCP probe rather
+    // than silently disappearing.
+    asphyxia()
+        .args(["as", "-t", "::1", "--discovery", "arp", "-o", "jsonl"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("ARP discovery is unavailable"))
+        .stdout(predicate::str::contains("\"ip\":\"::1\""));
+}
+
+#[test]
+fn discovery_flag_is_documented_in_help() {
+    asphyxia()
+        .args(["as", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--discovery"))
+        .stdout(predicate::str::contains("arp"));
+}
+
+#[test]
+fn discovery_arp_on_non_local_target_falls_back_to_tcp() {
+    // A non-local IPv4 target can't be reached by ARP; the scan must fall back
+    // to TCP and still complete (the host is down, so no record — but no crash).
+    asphyxia()
+        .args(["as", "-t", "192.0.2.1", "--discovery", "arp", "-o", "jsonl"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn discovery_flag_rejects_unknown_mode() {
+    asphyxia()
+        .args(["as", "-t", "127.0.0.1", "--discovery", "bogus"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value"));
+}
+
+#[test]
+fn discovery_default_is_tcp_and_unchanged() {
+    // Without --discovery, the default TCP path is used and the output carries
+    // `discovery: "tcp"` for confirmed hosts.
+    asphyxia()
+        .args(["as", "-t", "127.0.0.1", "-o", "jsonl"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"discovery\":\"tcp\""));
+}

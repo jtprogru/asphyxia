@@ -7,14 +7,24 @@ use std::time::{Duration, Instant};
 use crate::iface;
 use crate::utils::progress_bar;
 
-/// An available host together with how long the availability probe took.
+/// An available host together with how long the availability probe took and what
+/// confirmed it.
 ///
-/// The latency is the wall-clock time the answering [`PROBE_PORTS`] connection
-/// spent before succeeding or being refused/reset — a rough proxy for distance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The latency is the wall-clock time the answering probe spent before
+/// succeeding — a rough proxy for distance. `discovery` names the probe that
+/// confirmed the host (`"tcp"`, `"arp"`, or `"none"` for `-Pn`); `mac` and `oui`
+/// carry the hardware address and its vendor prefix when an ARP reply supplied
+/// one (enrichment for device classification).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostHit {
     pub ip: IpAddr,
     pub latency: Duration,
+    /// The probe that confirmed this host is up: `"tcp"`, `"arp"`, or `"none"`.
+    pub discovery: &'static str,
+    /// The MAC address from an ARP reply, when the host was discovered by ARP.
+    pub mac: Option<String>,
+    /// The vendor OUI (first three MAC octets, `aa-bb-cc`) when `mac` is known.
+    pub oui: Option<String>,
 }
 
 /// TCP ports used to probe a host when checking availability, tried in order
@@ -132,6 +142,9 @@ fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> Option<HostHit> {
         Ok(_) => Some(HostHit {
             ip,
             latency: start.elapsed(),
+            discovery: "tcp",
+            mac: None,
+            oui: None,
         }),
         // The host replied with a reset — it is up, the port is just closed.
         Err(e)
@@ -143,6 +156,9 @@ fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> Option<HostHit> {
             Some(HostHit {
                 ip,
                 latency: start.elapsed(),
+                discovery: "tcp",
+                mac: None,
+                oui: None,
             })
         }
         // Timeout, unreachable, or anything else: no answer.

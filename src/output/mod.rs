@@ -53,11 +53,13 @@ pub struct ScanRecord {
     /// Open port; omitted for address (host-availability) scans.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
-    /// Transport protocol of the probe.
+    /// Transport protocol of the probe: `"tcp"`, `"udp"`, or `"arp"` for a host
+    /// confirmed on the local L2 segment.
     pub proto: &'static str,
     /// The probe that produced this record: `"connect"`, `"syn"`, `"ack"`,
-    /// `"fin"`, `"null"` or `"xmas"`. It is per record, not per scan, because a
-    /// raw mode can fall back to a connect probe for an individual target or port.
+    /// `"fin"`, `"null"`, `"xmas"`, `"arp"`, or `"none"` for a `-Pn` address
+    /// scan that sent no probe. It is per record, not per scan, because a raw
+    /// mode can fall back to a connect probe for an individual target or port.
     pub scan: &'static str,
     /// Wall-clock latency of the probe, in milliseconds.
     pub latency_ms: u128,
@@ -72,6 +74,19 @@ pub struct ScanRecord {
     /// Raw service banner (from `--sV`), omitted when none was grabbed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub banner: Option<String>,
+    /// The probe that confirmed this host is up (`"tcp"`, `"arp"`, or `"none"`
+    /// for `-Pn`); present only for address-scan records and omitted for port
+    /// scans.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<&'static str>,
+    /// MAC address from an ARP reply; present only when the host was confirmed
+    /// by an ARP probe on a locally-connected subnet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    /// Vendor OUI (the first three MAC octets, `aa-bb-cc`) when `mac` is known;
+    /// a raw prefix, not a vendor-name lookup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oui: Option<String>,
 }
 
 /// Render `records` in a machine-readable `format` into a single string.
@@ -172,6 +187,9 @@ mod tests {
                 status: "open",
                 service: None,
                 banner: None,
+                discovery: None,
+                mac: None,
+                oui: None,
             },
             ScanRecord {
                 ip: "10.0.0.5".to_string(),
@@ -182,6 +200,9 @@ mod tests {
                 status: "up",
                 service: None,
                 banner: None,
+                discovery: None,
+                mac: None,
+                oui: None,
             },
         ]
     }
@@ -254,6 +275,9 @@ mod tests {
                 status: "unfiltered",
                 service: None,
                 banner: None,
+                discovery: None,
+                mac: None,
+                oui: None,
             },
             ScanRecord {
                 ip: "192.0.2.10".to_string(),
@@ -264,6 +288,9 @@ mod tests {
                 status: "filtered",
                 service: None,
                 banner: None,
+                discovery: None,
+                mac: None,
+                oui: None,
             },
         ];
         let csv = render(&records, OutputFormat::Csv);
@@ -293,6 +320,9 @@ mod tests {
                 status: "closed",
                 service: None,
                 banner: None,
+                discovery: None,
+                mac: None,
+                oui: None,
             },
             ScanRecord {
                 ip: "192.0.2.10".to_string(),
@@ -303,6 +333,9 @@ mod tests {
                 status: "open|filtered",
                 service: None,
                 banner: None,
+                discovery: None,
+                mac: None,
+                oui: None,
             },
             ScanRecord {
                 ip: "192.0.2.10".to_string(),
@@ -313,6 +346,9 @@ mod tests {
                 status: "open|filtered",
                 service: None,
                 banner: None,
+                discovery: None,
+                mac: None,
+                oui: None,
             },
         ];
         let csv = render(&records, OutputFormat::Csv);

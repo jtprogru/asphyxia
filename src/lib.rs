@@ -107,6 +107,9 @@ pub use scanner::address::{
     HostHit, range_addresses, scan_address, scan_address_with_retries, scan_hosts, scan_ip_range,
     scan_ip_range_with_retries, scan_subnet, scan_subnet_with_retries, subnet_addresses,
 };
+pub use scanner::discovery::arp::{
+    ArpHit, MacAddr, arp_probe, arp_probe_with_retries, is_local_ipv4,
+};
 pub use scanner::exclude::ExcludeSet;
 pub use scanner::nmap::{nmap_args, run_nmap, split_extra_args};
 /// Re-export commonly used types and functions

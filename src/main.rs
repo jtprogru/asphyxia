@@ -7,7 +7,7 @@ use clap::{ArgMatches, CommandFactory, FromArgMatches};
 use owo_colors::OwoColorize;
 use rayon::prelude::*;
 
-use asphyxia::cli::{Args, ScanMode, Unavailable};
+use asphyxia::cli::{Args, DiscoveryMode, ScanMode, Unavailable};
 use asphyxia::config::Config;
 use asphyxia::output::{OutputFormat, ScanRecord, emit};
 use asphyxia::rate;
@@ -51,6 +51,9 @@ fn all_up(addrs: Vec<IpAddr>) -> Vec<address::HostHit> {
         .map(|ip| address::HostHit {
             ip,
             latency: Duration::ZERO,
+            discovery: "none",
+            mac: None,
+            oui: None,
         })
         .collect()
 }
@@ -117,11 +120,14 @@ fn run_nmap_handoff(resolved: &[(String, String)], opened: &[(usize, Finding)], 
 }
 
 /// Filter out excluded addresses, then either mark the survivors up (for `-Pn`)
-/// or scan them.
+/// or scan them. When `discovery` is ARP, locally-connected IPv4 targets are
+/// probed with an ARP request first; anything that doesn't answer (or isn't on
+/// a local subnet) falls back to the TCP probe.
 fn scan_filtered(
     addrs: Vec<IpAddr>,
     exclude: &ExcludeSet,
     no_discovery: bool,
+    discovery: DiscoveryMode,
     timeout: Option<Duration>,
     retries: u32,
 ) -> Vec<address::HostHit> {
@@ -131,9 +137,76 @@ fn scan_filtered(
         .collect();
     if no_discovery {
         all_up(filtered)
+    } else if discovery == DiscoveryMode::Arp {
+        scan_hosts_arp_first(filtered, timeout, retries)
     } else {
         address::scan_hosts(filtered, timeout, retries)
     }
+}
+
+/// Probe each address with an ARP request first (for locally-connected IPv4),
+/// falling back to the TCP probe for anything that doesn't answer or isn't on a
+/// local subnet. Returns one [`address::HostHit`] per up host, sorted by
+/// address, tagged with how it was confirmed and its MAC when known.
+///
+/// The ARP probes run in parallel through the shared rayon pool. When no target
+/// can be reached by ARP (no local IPv4 target, no MAC, or no permission to open
+/// a pcap capture), the fallback is reported once and the whole list goes to TCP.
+fn scan_hosts_arp_first(
+    addrs: Vec<IpAddr>,
+    timeout: Option<Duration>,
+    retries: u32,
+) -> Vec<address::HostHit> {
+    use asphyxia::scanner::discovery::arp;
+
+    let timeout = timeout.unwrap_or(Duration::from_millis(2000));
+    if !arp::prepare(&addrs) {
+        eprintln!(
+            "{}",
+            "ARP discovery is unavailable for these targets (needs a local IPv4 target with a MAC, root/CAP_NET_RAW and libpcap) — falling back to TCP"
+                .yellow()
+        );
+        return address::scan_hosts(addrs, Some(timeout), retries);
+    }
+
+    let pb = progress_bar(addrs.len() as u64, "ARP probes");
+    let probed: Vec<(IpAddr, Option<address::HostHit>)> = addrs
+        .into_par_iter()
+        .map(|ip| {
+            let hit = match ip {
+                IpAddr::V4(v4) => {
+                    arp::arp_probe_with_retries(v4, timeout, retries).map(|hit| address::HostHit {
+                        ip: IpAddr::V4(hit.ip),
+                        latency: hit.latency,
+                        discovery: "arp",
+                        mac: Some(hit.mac.to_string()),
+                        oui: Some(hit.mac.oui()),
+                    })
+                }
+                IpAddr::V6(_) => None,
+            };
+            pb.inc(1);
+            (ip, hit)
+        })
+        .collect();
+    pb.finish_with_message("ARP probing completed");
+
+    let mut hits: Vec<address::HostHit> = Vec::new();
+    let mut tcp_fallback: Vec<IpAddr> = Vec::new();
+    for (ip, hit) in probed {
+        match hit {
+            Some(hit) => hits.push(hit),
+            // Not local, not IPv4, or no ARP reply — fall back to TCP.
+            None => tcp_fallback.push(ip),
+        }
+    }
+
+    if !tcp_fallback.is_empty() {
+        hits.extend(address::scan_hosts(tcp_fallback, Some(timeout), retries));
+    }
+
+    hits.sort_by_key(|h| h.ip);
+    hits
 }
 
 /// Map a persisted status string back to the `&'static str` the report uses.
@@ -967,6 +1040,9 @@ fn main() {
                             status: f.status,
                             service: f.service.clone(),
                             banner: f.banner.clone(),
+                            discovery: None,
+                            mac: None,
+                            oui: None,
                         })
                         .collect();
                     if let Err(e) = emit(&records, format, output_file.as_deref()) {
@@ -999,6 +1075,7 @@ fn main() {
             target,
             range,
             no_discovery,
+            discovery: discovery_mode,
             exclude,
             exclude_file,
             timeout,
@@ -1034,6 +1111,13 @@ fn main() {
                                 address::subnet_addresses(network),
                                 &exclude_set,
                                 no_discovery,
+                                discovery_mode,
+                                timeout,
+                                retries,
+                            )
+                        } else if discovery_mode == DiscoveryMode::Arp {
+                            scan_hosts_arp_first(
+                                address::subnet_addresses(network),
                                 timeout,
                                 retries,
                             )
@@ -1057,7 +1141,16 @@ fn main() {
                             );
                         }
                         if materialize {
-                            scan_filtered(vec![ip], &exclude_set, no_discovery, timeout, retries)
+                            scan_filtered(
+                                vec![ip],
+                                &exclude_set,
+                                no_discovery,
+                                discovery_mode,
+                                timeout,
+                                retries,
+                            )
+                        } else if discovery_mode == DiscoveryMode::Arp {
+                            scan_hosts_arp_first(vec![ip], timeout, retries)
                         } else {
                             address::scan_address_with_retries(ip, timeout, retries)
                                 .into_iter()
@@ -1086,6 +1179,13 @@ fn main() {
                                 address::range_addresses(start, end),
                                 &exclude_set,
                                 no_discovery,
+                                discovery_mode,
+                                timeout,
+                                retries,
+                            )
+                        } else if discovery_mode == DiscoveryMode::Arp {
+                            scan_hosts_arp_first(
+                                address::range_addresses(start, end),
                                 timeout,
                                 retries,
                             )
@@ -1108,7 +1208,11 @@ fn main() {
                     if !available.is_empty() {
                         println!("\n-- {} --\n", "Available hosts".green());
                         for hit in &available {
-                            println!("{}", hit.ip.to_string().bright_green());
+                            let mut line = hit.ip.to_string().bright_green().to_string();
+                            if let Some(mac) = &hit.mac {
+                                line.push_str(&format!(" {}", mac.as_str().dimmed()));
+                            }
+                            println!("{}", line);
                         }
                     } else {
                         println!("\n{}", "No available hosts found 😕".yellow());
@@ -1122,12 +1226,20 @@ fn main() {
                         .map(|hit| ScanRecord {
                             ip: hit.ip.to_string(),
                             port: None,
-                            proto: "tcp",
-                            scan: "connect",
+                            // An ARP-confirmed host was not probed over TCP.
+                            proto: if hit.discovery == "arp" { "arp" } else { "tcp" },
+                            scan: match hit.discovery {
+                                "arp" => "arp",
+                                "none" => "none",
+                                _ => "connect",
+                            },
                             latency_ms: hit.latency.as_millis(),
                             status: "up",
                             service: None,
                             banner: None,
+                            discovery: Some(hit.discovery),
+                            mac: hit.mac.clone(),
+                            oui: hit.oui.clone(),
                         })
                         .collect();
                     if let Err(e) = emit(&records, format, output_file.as_deref()) {
