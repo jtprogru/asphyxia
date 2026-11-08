@@ -1819,3 +1819,114 @@ fn discovery_default_is_tcp_and_unchanged() {
         .success()
         .stdout(predicate::str::contains("\"discovery\":\"tcp\""));
 }
+
+#[test]
+fn diff_reports_new_and_removed_hosts_and_ports() {
+    let dir = std::env::temp_dir();
+    let old = dir.join(format!("asphyxia-diff-old-{}.jsonl", std::process::id()));
+    let new = dir.join(format!("asphyxia-diff-new-{}.jsonl", std::process::id()));
+    std::fs::write(
+        &old,
+        concat!(
+            "{\"ip\":\"10.0.0.1\",\"port\":22,\"proto\":\"tcp\",\"status\":\"open\"}\n",
+            "{\"ip\":\"10.0.0.2\",\"port\":80,\"proto\":\"tcp\",\"status\":\"open\"}\n",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &new,
+        concat!(
+            "{\"ip\":\"10.0.0.1\",\"port\":22,\"proto\":\"tcp\",\"status\":\"open\"}\n",
+            "{\"ip\":\"10.0.0.3\",\"port\":443,\"proto\":\"tcp\",\"status\":\"open\"}\n",
+        ),
+    )
+    .unwrap();
+
+    asphyxia()
+        .args(["diff", old.to_str().unwrap(), new.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("New hosts: 1"))
+        .stdout(predicate::str::contains("10.0.0.3"))
+        .stdout(predicate::str::contains("Removed hosts: 1"))
+        .stdout(predicate::str::contains("10.0.0.2"))
+        .stdout(predicate::str::contains("New ports: 1"));
+
+    asphyxia()
+        .args([
+            "diff",
+            old.to_str().unwrap(),
+            new.to_str().unwrap(),
+            "-o",
+            "jsonl",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"event\":\"new_host\""))
+        .stdout(predicate::str::contains("\"event\":\"removed_host\""));
+
+    let _ = std::fs::remove_file(&old);
+    let _ = std::fs::remove_file(&new);
+}
+
+#[test]
+fn diff_warns_when_the_host_sets_are_disjoint() {
+    let dir = std::env::temp_dir();
+    let old = dir.join(format!(
+        "asphyxia-diff-scope-old-{}.json",
+        std::process::id()
+    ));
+    let new = dir.join(format!(
+        "asphyxia-diff-scope-new-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &old,
+        r#"[{"ip":"10.0.0.1","port":22,"proto":"tcp","status":"open"}]"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &new,
+        r#"[{"ip":"10.0.0.2","port":22,"proto":"tcp","status":"open"}]"#,
+    )
+    .unwrap();
+
+    asphyxia()
+        .args([
+            "diff",
+            old.to_str().unwrap(),
+            new.to_str().unwrap(),
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("target scope may differ"));
+
+    let _ = std::fs::remove_file(&old);
+    let _ = std::fs::remove_file(&new);
+}
+
+#[test]
+fn diff_rejects_invalid_input_and_csv_format() {
+    let dir = std::env::temp_dir();
+    let bad = dir.join(format!("asphyxia-diff-bad-{}.json", std::process::id()));
+    std::fs::write(&bad, "not json").unwrap();
+    asphyxia()
+        .args(["diff", bad.to_str().unwrap(), bad.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid JSON"));
+    asphyxia()
+        .args([
+            "diff",
+            bad.to_str().unwrap(),
+            bad.to_str().unwrap(),
+            "-o",
+            "csv",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("diff supports"));
+    let _ = std::fs::remove_file(&bad);
+}

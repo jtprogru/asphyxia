@@ -28,6 +28,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Reverse DNS / PTR** — `as --resolve-ptr` adds a PTR name and a separate forward-confirmed verdict for each live host, with a bounded lookup that never fails the base scan.
 - **Device classification** — `--classify` labels an asset (`windows`, `printer`, `hypervisor`, `network-device`, `web-server`, or `unknown`) with a confidence, using only ports/banners already collected and the ARP OUI; it never probes again.
 - **Offline ASN / cloud hints** — `--asn` adds `asn`, `asn_org` and `cloud` from a bundled prefix table, with no DNS or API requests and no target IP leaving the machine.
+- **Scan comparison** — `asphyxia diff old.json new.json` reports new/removed hosts and ports plus status, service and banner changes, with a JSON Lines change stream for downstream tools.
 - **Chainable scans** — pipe the hosts an address scan discovers straight into a port scan with `--stdin`, turning host discovery and port scanning into a single pipeline.
 - **IPv4 and IPv6** — connect and UDP scans accept both address families; raw TCP and ARP modes are IPv4-only and fall back visibly for IPv6.
 - **Configurable timeout** — tune the per-connection timeout with `--timeout`.
@@ -552,6 +553,27 @@ asphyxia as -s 192.168.1.0/24 --Pn --asn -o jsonl
 - **Hints, not a registry** — the table covers common clouds and CDNs (AWS, GCP, Azure, Cloudflare, Fastly, DigitalOcean, GitHub) and is deliberately non-exhaustive; an unmatched address gets no fields, never a guessed ASN.
 - **Facts stay separate** — `asn`, `asn_org` and `cloud` are metadata beside the scan result and never replace the raw IP, port or state.
 - **Opt-in** — without `--asn` no lookup is performed. An external ASN source is intentionally not implemented in this iteration: the tool stays offline and no target data is disclosed.
+
+## Comparing two scans (`diff`)
+
+`asphyxia diff <old> <new>` compares two structured result files (a JSON array or JSON Lines, as produced by `-o json` / `-o jsonl`) and reports what changed between them.
+
+```bash
+# Save a baseline, rescan later, and compare
+asphyxia ps -t example.com --top-ports 1000 -o jsonl --output-file before.jsonl
+asphyxia ps -t example.com --top-ports 1000 -o jsonl --output-file after.jsonl
+asphyxia diff before.jsonl after.jsonl
+
+# A change stream for a downstream consumer
+asphyxia diff before.jsonl after.jsonl -o jsonl | jq -c .
+```
+
+- **Identity** — records are matched by `(ip, port, proto)`, so reordering the input files does not create false changes.
+- **Categories** — new/removed hosts, new/removed ports, and `status`/`service`/`banner` changes on ports present in both files.
+- **Deterministic** — every list is sorted, independent of input order.
+- **Scope warning** — if one file is empty, the host sets are disjoint, or the protocol sets differ, the diff says the target scope may differ instead of silently reporting bogus removals.
+- **Formats** — `-o text` (default), `-o json` (one report), or `-o jsonl` (one event per line: `new_host`, `removed_host`, `new_port`, `removed_port`, `changed`, `warning`). `--output-file` writes the report to a file.
+- **Source** — comparison uses the stable result records, not the `--resume` state file; two scans with different port sets can still be compared.
 
 ### Machine-readable output (`--output`)
 

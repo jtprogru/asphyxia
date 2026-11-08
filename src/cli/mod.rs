@@ -536,6 +536,23 @@ pub enum Args {
         #[arg(long = "output-file", visible_alias = "oF", value_name = "PATH")]
         output_file: Option<PathBuf>,
     },
+    /// Compare two structured scan result files
+    #[command(name = "diff", about = "Compare two structured scan result files")]
+    Diff {
+        /// Older result file (JSON array or JSON Lines)
+        old: PathBuf,
+
+        /// Newer result file (JSON array or JSON Lines)
+        new: PathBuf,
+
+        /// Output format: text (default), json, or jsonl (change events)
+        #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
+        output: OutputFormat,
+
+        /// Write the report to a file instead of stdout
+        #[arg(long = "output-file", visible_alias = "oF", value_name = "PATH")]
+        output_file: Option<PathBuf>,
+    },
 }
 
 impl Args {
@@ -546,6 +563,7 @@ impl Args {
             Args::PortScan { concurrency, .. } | Args::AddressScan { concurrency, .. } => {
                 *concurrency
             }
+            Args::Diff { .. } => 256,
         }
     }
 
@@ -553,6 +571,7 @@ impl Args {
     pub fn output_format(&self) -> OutputFormat {
         match self {
             Args::PortScan { output, .. } | Args::AddressScan { output, .. } => *output,
+            Args::Diff { output, .. } => *output,
         }
     }
 
@@ -563,6 +582,7 @@ impl Args {
             Args::PortScan { interface, .. } | Args::AddressScan { interface, .. } => {
                 interface.as_deref()
             }
+            Args::Diff { .. } => None,
         }
     }
 
@@ -573,6 +593,7 @@ impl Args {
             Args::PortScan { output_file, .. } | Args::AddressScan { output_file, .. } => {
                 output_file.as_ref()
             }
+            Args::Diff { output_file, .. } => output_file.as_ref(),
         }
     }
 
@@ -581,6 +602,7 @@ impl Args {
     pub fn retries(&self) -> u32 {
         match self {
             Args::PortScan { retries, .. } | Args::AddressScan { retries, .. } => *retries,
+            Args::Diff { .. } => 0,
         }
     }
 
@@ -589,6 +611,7 @@ impl Args {
     pub fn rate(&self) -> Option<u32> {
         match self {
             Args::PortScan { rate, .. } | Args::AddressScan { rate, .. } => *rate,
+            Args::Diff { .. } => None,
         }
     }
 
@@ -597,7 +620,7 @@ impl Args {
     pub fn delay(&self) -> Option<u64> {
         match self {
             Args::PortScan { delay, .. } => *delay,
-            Args::AddressScan { .. } => None,
+            Args::AddressScan { .. } | Args::Diff { .. } => None,
         }
     }
 
@@ -605,7 +628,7 @@ impl Args {
     pub fn jitter(&self) -> Option<u32> {
         match self {
             Args::PortScan { jitter, .. } => *jitter,
-            Args::AddressScan { .. } => None,
+            Args::AddressScan { .. } | Args::Diff { .. } => None,
         }
     }
 
@@ -613,7 +636,9 @@ impl Args {
     /// into [`ScanMode`]. UDP and address scans always use plain sockets.
     pub fn scan_mode(&self) -> ScanMode {
         match self {
-            Args::PortScan { udp: true, .. } | Args::AddressScan { .. } => ScanMode::Connect,
+            Args::PortScan { udp: true, .. } | Args::AddressScan { .. } | Args::Diff { .. } => {
+                ScanMode::Connect
+            }
             Args::PortScan { syn, scan, .. } => {
                 if *syn {
                     ScanMode::Syn

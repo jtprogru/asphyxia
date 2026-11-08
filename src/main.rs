@@ -1001,6 +1001,8 @@ fn resolve_options(args: &mut Args, matches: &ArgMatches, config: &Config) {
                 }
             }
         }
+        // `diff` has no tunables to resolve.
+        Args::Diff { .. } => {}
     }
 }
 
@@ -1900,6 +1902,65 @@ fn main() {
                         eprintln!("{}", format!("Failed to write output: {}", e).red());
                     }
                 }
+            }
+        }
+        Args::Diff {
+            old,
+            new,
+            output,
+            output_file,
+        } => {
+            if !matches!(
+                output,
+                OutputFormat::Text | OutputFormat::Json | OutputFormat::Jsonl
+            ) {
+                eprintln!("{}", "diff supports -o text, -o json, or -o jsonl".red());
+                std::process::exit(2);
+            }
+
+            let old_records = match asphyxia::diff::load(&old) {
+                Ok(records) => records,
+                Err(e) => {
+                    eprintln!("{}", e.red());
+                    std::process::exit(2);
+                }
+            };
+            let new_records = match asphyxia::diff::load(&new) {
+                Ok(records) => records,
+                Err(e) => {
+                    eprintln!("{}", e.red());
+                    std::process::exit(2);
+                }
+            };
+            let report = asphyxia::diff::compare(old_records, new_records);
+
+            // Keep scope warnings visible even when the payload goes to a file.
+            if output != OutputFormat::Text {
+                for warning in &report.warnings {
+                    eprintln!("{}", format!("warning: {warning}").yellow());
+                }
+            }
+
+            let rendered = match output {
+                OutputFormat::Text => asphyxia::diff::render_text(&report),
+                OutputFormat::Json => {
+                    format!("{}\n", serde_json::to_string_pretty(&report).unwrap())
+                }
+                OutputFormat::Jsonl => asphyxia::diff::render_jsonl(&report),
+                OutputFormat::Csv | OutputFormat::Grep => unreachable!("validated above"),
+            };
+
+            match output_file {
+                Some(path) => {
+                    if let Err(e) = std::fs::write(&path, rendered) {
+                        eprintln!(
+                            "{}",
+                            format!("Failed to write {}: {e}", path.display()).red()
+                        );
+                        std::process::exit(2);
+                    }
+                }
+                None => print!("{rendered}"),
             }
         }
     }

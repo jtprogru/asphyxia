@@ -94,6 +94,7 @@ pub mod asn;
 pub mod classify;
 pub mod cli;
 pub mod config;
+pub mod diff;
 pub mod dns;
 pub mod iface;
 pub mod output;
@@ -106,6 +107,7 @@ pub mod utils;
 pub use asn::{AsnInfo, lookup as lookup_asn};
 pub use classify::{Device, classify_oui, classify_ports};
 pub use config::Config;
+pub use diff::{DiffReport, compare as diff_compare, load as load_diff};
 pub use output::{OutputFormat, ScanRecord, emit, render};
 pub use resume::{ScanState, StateFinding};
 pub use scanner::address::{
