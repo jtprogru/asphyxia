@@ -68,8 +68,8 @@ const IPPROTO_TCP: u8 = 6;
 /// How a raw probe's reply is interpreted. Which variants a scan can produce
 /// depends on its [`ProbeMode`]: a SYN probe decides open/closed/filtered, an
 /// ACK probe decides unfiltered/filtered and never claims open or closed, and
-/// the FIN/NULL/XMAS probes decide closed/open|filtered — silence there is not
-/// `open`, it is the honest `open|filtered`.
+/// the FIN/NULL/XMAS probes decide closed/filtered/open|filtered — silence
+/// there is not `open`, it is the honest `open|filtered`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeOutcome {
     /// SYN/ACK — the port is open. SYN mode only.
@@ -454,8 +454,9 @@ pub fn syn_scan_port(dst: Ipv4Addr, dst_port: u16, timeout: Duration) -> Option<
 /// In [`ProbeMode::Syn`] a SYN/ACK is [`ProbeOutcome::Open`], an RST is
 /// [`ProbeOutcome::Closed`]. In [`ProbeMode::Ack`] an RST is
 /// [`ProbeOutcome::Unfiltered`]. In FIN/NULL/XMAS an RST is
-/// [`ProbeOutcome::Closed`] and the caller reports silence as `open|filtered`.
-/// In every mode no reply within `timeout` is [`ProbeOutcome::Filtered`].
+/// [`ProbeOutcome::Closed`] and the caller reports silence as `open|filtered`;
+/// an ICMP unreachable is [`ProbeOutcome::Unreachable`] in every mode. No reply
+/// within `timeout` is [`ProbeOutcome::Filtered`].
 ///
 /// Returns `None` when the raw scan cannot run — the receiver was never
 /// installed (no [`init_receiver`], or it failed), a raw socket cannot be
