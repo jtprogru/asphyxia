@@ -31,6 +31,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Scan comparison** — `asphyxia diff old.json new.json` reports new/removed hosts and ports plus status, service and banner changes, with a JSON Lines change stream for downstream tools.
 - **Watch mode** — `ps --watch 5m` rescans the same scope on an interval and emits JSON Lines change events, with an explicit baseline, `--watch-count` stop condition, and bounded memory.
 - **Traceroute** — `trace <target>` maps the path with per-hop RTT and loss over TCP (default) or ICMP, keeping silent hops visible and marking the first one.
+- **Markdown/HTML reports** — `--report md|html` turns the same records into a shareable report grouped by host, service and device type, with scan metadata and sanitized, truncated banners.
 - **Chainable scans** — pipe the hosts an address scan discovers straight into a port scan with `--stdin`, turning host discovery and port scanning into a single pipeline.
 - **IPv4 and IPv6** — connect and UDP scans accept both address families; raw TCP and ARP modes are IPv4-only and fall back visibly for IPv6.
 - **Configurable timeout** — tune the per-connection timeout with `--timeout`.
@@ -185,6 +186,12 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `--sV` (`--banner`) | Grab banners and identify the service on each open TCP port |
 | `--classify` | Infer a coarse device type and confidence from already-collected ports/banners (no new probes) |
 | `--asn` | Add offline `asn`, `asn_org` and `cloud` hints from the bundled prefix table; no network requests |
+| `--report <md\|html>` | Generate a Markdown or HTML report from the records (report output replaces the normal output) |
+| `--report-file <PATH>` | Write the report to a file instead of stdout |
+| `--full-banners` | Keep full sanitized banners in the report (default: truncate to 80 characters) |
+| `--report <md\|html>` | Generate a Markdown or HTML report from the records (report output replaces the normal output) |
+| `--report-file <PATH>` | Write the report to a file instead of stdout |
+| `--full-banners` | Keep full sanitized banners in the report (default: truncate to 80 characters) |
 | `--watch <INTERVAL>` | Rescan every interval (`30s`, `5m`, `1h`) and emit JSON Lines changes; the first pass is a baseline |
 | `--watch-count <N>` | Stop watch mode after N passes (requires `--watch`) |
 | `--resume <PATH>` | Checkpoint progress to a file and resume from it if it already exists |
@@ -437,6 +444,12 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 | `--resolve-ptr` | Enrich live hosts with a reverse-DNS PTR name and a separate forward-confirmed verdict (`ptr`, `ptr_confirmed`). Lookups are optional and bounded by the per-host timeout. |
 | `--classify` | Infer a coarse device type and confidence from already-collected ports/banners/OUI (no new probes) |
 | `--asn` | Add offline `asn`, `asn_org` and `cloud` hints from the bundled prefix table; no network requests |
+| `--report <md\|html>` | Generate a Markdown or HTML report from the records (report output replaces the normal output) |
+| `--report-file <PATH>` | Write the report to a file instead of stdout |
+| `--full-banners` | Keep full sanitized banners in the report (default: truncate to 80 characters) |
+| `--report <md\|html>` | Generate a Markdown or HTML report from the records (report output replaces the normal output) |
+| `--report-file <PATH>` | Write the report to a file instead of stdout |
+| `--full-banners` | Keep full sanitized banners in the report (default: truncate to 80 characters) |
 | `--watch <INTERVAL>` | Rescan every interval (`30s`, `5m`, `1h`) and emit JSON Lines changes; the first pass is a baseline |
 | `--watch-count <N>` | Stop watch mode after N passes (requires `--watch`) |
 | `--exclude <SPEC>` | Exclude hosts/CIDRs from the scan (repeatable; each value may be comma-separated) |
@@ -621,6 +634,24 @@ sudo asphyxia trace example.com -o jsonl | jq -c 'select(.event == "hop")'
 - **Formats** — `-o text` (default), `-o json` (one report), or `-o jsonl` (a `trace` record, one `hop` per line, then `summary`). `--output-file` writes to a file.
 - **Requirements** — IPv4 only and raw sockets: root or `CAP_NET_RAW`, plus libpcap for the reply capture. IPv6 targets fail with a clear message rather than a fake path.
 - **Bounds** — `--max-hops` (1–64), `--probes` (1–10) and `--timeout` keep the run bounded.
+
+## Reports (`--report md|html`)
+
+`--report md` or `--report html` renders the scan records as a shareable report instead of the normal output. It is the same data path as the machine formats and the CLI — no second scan and no separate collection.
+
+```bash
+# Markdown report to stdout, including metadata and all three groupings
+asphyxia ps -t example.com --top-ports 100 --sV --classify --report md
+
+# HTML report to a file
+asphyxia as -s 192.168.1.0/24 --discovery arp --classify --report html --report-file inventory.html
+```
+
+- **Metadata** — target scope, generation timestamp (Unix time), tool version and scan mode are in the header.
+- **Groupings** — by host (ports/services/status), by service, and by inferred device type (when `--classify` supplied one); unknown values are labelled `(unknown)`/`(unclassified)`.
+- **Same records** — the report is built from the same `ScanRecord` list as JSON/CSV/grep, so it cannot drift from the machine output.
+- **Banners** — sanitized (control characters removed) and truncated to 80 characters by default; `--full-banners` keeps the full sanitized text. HTML is escaped.
+- **Placement** — `--report-file` writes the report to a file; without it the report goes to stdout. Report mode replaces the normal text/machine output.
 
 ### Machine-readable output (`--output`)
 

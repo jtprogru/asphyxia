@@ -99,6 +99,7 @@ pub mod dns;
 pub mod iface;
 pub mod output;
 pub mod rate;
+pub mod report;
 pub mod resume;
 pub mod scanner;
 pub mod timing;

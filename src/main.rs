@@ -198,7 +198,14 @@ fn watch_child_args(temp: &Path) -> Result<Vec<std::ffi::OsString>, String> {
         let text = raw[index].to_string_lossy();
         if matches!(
             text.as_ref(),
-            "--watch" | "--watch-count" | "-o" | "--output" | "--output-file" | "--oF"
+            "--watch"
+                | "--watch-count"
+                | "-o"
+                | "--output"
+                | "--output-file"
+                | "--oF"
+                | "--report"
+                | "--report-file"
         ) {
             index += 2;
             continue;
@@ -207,6 +214,9 @@ fn watch_child_args(temp: &Path) -> Result<Vec<std::ffi::OsString>, String> {
             || text.starts_with("--watch-count=")
             || text.starts_with("--output=")
             || text.starts_with("--output-file=")
+            || text.starts_with("--report=")
+            || text.starts_with("--report-file=")
+            || text == "--full-banners"
             || (text.starts_with("-o") && text.len() > 2)
         {
             index += 1;
@@ -430,6 +440,75 @@ fn asn_info(ip: IpAddr, enabled: bool) -> Option<asphyxia::asn::AsnInfo> {
     } else {
         None
     }
+}
+
+/// Build the canonical records for an address scan: up hosts plus, when
+/// requested, ICMP non-responders.
+fn address_records(
+    available: &DiscoveryReport,
+    classify: bool,
+    asn_enabled: bool,
+    show_down: bool,
+) -> Vec<ScanRecord> {
+    let mut records: Vec<ScanRecord> = available
+        .up
+        .iter()
+        .map(|hit| {
+            let info = asn_info(hit.ip, asn_enabled);
+            let device = if classify {
+                Some(
+                    hit.oui
+                        .as_deref()
+                        .map(asphyxia::classify::classify_oui)
+                        .unwrap_or_else(asphyxia::classify::Device::unknown),
+                )
+            } else {
+                None
+            };
+            ScanRecord {
+                ip: hit.ip.to_string(),
+                port: None,
+                // ARP/ICMP-confirmed hosts were not probed over TCP.
+                proto: match hit.discovery {
+                    "arp" => "arp",
+                    "icmp" => "icmp",
+                    _ => "tcp",
+                },
+                scan: match hit.discovery {
+                    "arp" => "arp",
+                    "icmp" => "icmp",
+                    "none" => "none",
+                    _ => "connect",
+                },
+                latency_ms: hit.latency.as_millis(),
+                status: "up",
+                service: None,
+                banner: None,
+                discovery: Some(hit.discovery),
+                mac: hit.mac.clone(),
+                oui: hit.oui.clone(),
+                reason: None,
+                ptr: hit.ptr.clone(),
+                ptr_confirmed: hit.ptr_confirmed,
+                device_type: device.map(|device| device.device_type),
+                device_confidence: device.map(|device| device.confidence),
+                asn: info.map(|info| info.asn),
+                asn_org: info.map(|info| info.asn_org),
+                cloud: info.and_then(|info| info.cloud),
+            }
+        })
+        .collect();
+    if show_down {
+        records.extend(available.down.iter().map(|down| {
+            let mut record = down_record(down);
+            let info = asn_info(down.ip, asn_enabled);
+            record.asn = info.map(|info| info.asn);
+            record.asn_org = info.map(|info| info.asn_org);
+            record.cloud = info.and_then(|info| info.cloud);
+            record
+        }));
+    }
+    records
 }
 
 /// Filter out excluded addresses, then either mark the survivors up (for `-Pn`)
@@ -1240,6 +1319,9 @@ fn main() {
             asn: asn_enabled,
             watch,
             watch_count,
+            report,
+            report_file,
+            full_banners,
             resume,
             nmap,
             nmap_args,
@@ -1521,7 +1603,7 @@ fn main() {
                 _ => proto,
             };
 
-            if format == OutputFormat::Text {
+            if format == OutputFormat::Text && report.is_none() {
                 if let [(host, _)] = resolved.as_slice() {
                     println!(
                         "\n##### {} scanning ports on host: {} #####\n",
@@ -1629,6 +1711,72 @@ fn main() {
                     std::collections::HashMap::new()
                 };
 
+            // Build the canonical records once: both the machine formats and
+            // the report renderer consume the same list.
+            let records: Vec<ScanRecord> = results
+                .iter()
+                .map(|(i, f)| {
+                    let info = resolved[*i]
+                        .1
+                        .parse::<IpAddr>()
+                        .ok()
+                        .and_then(|ip| asn_info(ip, asn_enabled));
+                    ScanRecord {
+                        ip: resolved[*i].1.clone(),
+                        port: Some(f.port),
+                        proto,
+                        scan: f.scan,
+                        latency_ms: f.latency.as_millis(),
+                        status: f.status,
+                        service: f.service.clone(),
+                        banner: f.banner.clone(),
+                        discovery: None,
+                        mac: None,
+                        oui: None,
+                        reason: None,
+                        ptr: None,
+                        ptr_confirmed: None,
+                        device_type: classifications.get(i).map(|d| d.device_type),
+                        device_confidence: classifications.get(i).map(|d| d.confidence),
+                        asn: info.map(|info| info.asn),
+                        asn_org: info.map(|info| info.asn_org),
+                        cloud: info.and_then(|info| info.cloud),
+                    }
+                })
+                .collect();
+
+            if let Some(report_format) = report {
+                let scope = resolved
+                    .iter()
+                    .map(|(host, _)| host.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                let meta = asphyxia::report::ReportMeta {
+                    targets: &scope,
+                    timestamp,
+                    version: env!("CARGO_PKG_VERSION"),
+                    scan_mode: mode.label(),
+                };
+                let rendered =
+                    asphyxia::report::render(&records, report_format, &meta, full_banners);
+                match report_file {
+                    Some(path) => {
+                        if let Err(e) = std::fs::write(&path, rendered) {
+                            eprintln!(
+                                "{}",
+                                format!("Failed to write {}: {e}", path.display()).red()
+                            );
+                        }
+                    }
+                    None => print!("{rendered}"),
+                }
+                return;
+            }
+
             match format {
                 OutputFormat::Text => {
                     // An ACK, FIN/NULL/XMAS or UDP scan lists a state for every
@@ -1704,37 +1852,6 @@ fn main() {
                     println!("\n##### {} #####\n", "Game Over".bright_red());
                 }
                 _ => {
-                    let records: Vec<ScanRecord> = results
-                        .iter()
-                        .map(|(i, f)| {
-                            let info = resolved[*i]
-                                .1
-                                .parse::<IpAddr>()
-                                .ok()
-                                .and_then(|ip| asn_info(ip, asn_enabled));
-                            ScanRecord {
-                                ip: resolved[*i].1.clone(),
-                                port: Some(f.port),
-                                proto,
-                                scan: f.scan,
-                                latency_ms: f.latency.as_millis(),
-                                status: f.status,
-                                service: f.service.clone(),
-                                banner: f.banner.clone(),
-                                discovery: None,
-                                mac: None,
-                                oui: None,
-                                reason: None,
-                                ptr: None,
-                                ptr_confirmed: None,
-                                device_type: classifications.get(i).map(|d| d.device_type),
-                                device_confidence: classifications.get(i).map(|d| d.confidence),
-                                asn: info.map(|info| info.asn),
-                                asn_org: info.map(|info| info.asn_org),
-                                cloud: info.and_then(|info| info.cloud),
-                            }
-                        })
-                        .collect();
                     if let Err(e) = emit(&records, format, output_file.as_deref()) {
                         eprintln!("{}", format!("Failed to write output: {}", e).red());
                     }
@@ -1771,6 +1888,9 @@ fn main() {
             resolve_ptr,
             classify,
             asn: asn_enabled,
+            report,
+            report_file,
+            full_banners,
             exclude,
             exclude_file,
             timeout,
@@ -1778,6 +1898,15 @@ fn main() {
         } => {
             let ptr_timeout = Duration::from_millis(timeout);
             let timeout = Some(ptr_timeout);
+            let scope = if let Some(subnet) = &subnet {
+                subnet.clone()
+            } else if let Some(target) = &target {
+                target.clone()
+            } else if let Some(range) = &range {
+                range.join(" - ")
+            } else {
+                "unknown".to_string()
+            };
 
             // Resolve --discovery before any probing. `auto` expands to the
             // broadest sensible order; explicit combinations keep their order.
@@ -1795,6 +1924,11 @@ fn main() {
                         .bright_black()
                 );
             }
+            let plan_label = plan
+                .iter()
+                .map(|mode| mode.label())
+                .collect::<Vec<_>>()
+                .join(",");
 
             // Host discovery ports: the default TCP spread unless overridden.
             let custom_discovery_ports = discovery_ports.is_some();
@@ -1841,7 +1975,7 @@ fn main() {
             let mut available: DiscoveryReport = if let Some(subnet_str) = subnet {
                 match parse_subnet(&subnet_str) {
                     Ok(network) => {
-                        if format == OutputFormat::Text {
+                        if format == OutputFormat::Text && report.is_none() {
                             println!(
                                 "\n##### {} scanning subnet: {} #####\n",
                                 "Started".bright_blue(),
@@ -1880,7 +2014,7 @@ fn main() {
             } else if let Some(target_str) = target {
                 match parse_ip(&target_str) {
                     Ok(ip) => {
-                        if format == OutputFormat::Text {
+                        if format == OutputFormat::Text && report.is_none() {
                             println!(
                                 "\n##### {} scanning target: {} #####\n",
                                 "Started".bright_blue(),
@@ -1916,7 +2050,7 @@ fn main() {
                 // clap enforces exactly two values via `num_args = 2`.
                 match (parse_ip(&range_vec[0]), parse_ip(&range_vec[1])) {
                     (Ok(start), Ok(end)) => {
-                        if format == OutputFormat::Text {
+                        if format == OutputFormat::Text && report.is_none() {
                             println!(
                                 "\n##### {} scanning range: {} - {} #####\n",
                                 "Started".bright_blue(),
@@ -1966,6 +2100,36 @@ fn main() {
                     hit.ptr = ptr;
                     hit.ptr_confirmed = confirmed;
                 });
+            }
+
+            // One canonical record list feeds the report renderer and the
+            // machine formats; text output reads the same findings.
+            let records = address_records(&available, classify, asn_enabled, show_down);
+            if let Some(report_format) = report {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                let meta = asphyxia::report::ReportMeta {
+                    targets: &scope,
+                    timestamp,
+                    version: env!("CARGO_PKG_VERSION"),
+                    scan_mode: &plan_label,
+                };
+                let rendered =
+                    asphyxia::report::render(&records, report_format, &meta, full_banners);
+                match report_file {
+                    Some(path) => {
+                        if let Err(e) = std::fs::write(&path, rendered) {
+                            eprintln!(
+                                "{}",
+                                format!("Failed to write {}: {e}", path.display()).red()
+                            );
+                        }
+                    }
+                    None => print!("{rendered}"),
+                }
+                return;
             }
 
             match format {
@@ -2022,74 +2186,6 @@ fn main() {
                     println!("\n##### {} #####\n", "Game Over".bright_red());
                 }
                 _ => {
-                    let mut records: Vec<ScanRecord> = available
-                        .up
-                        .iter()
-                        .map(|hit| {
-                            let info = asn_info(hit.ip, asn_enabled);
-                            ScanRecord {
-                                ip: hit.ip.to_string(),
-                                port: None,
-                                // ARP/ICMP-confirmed hosts were not probed over TCP.
-                                proto: match hit.discovery {
-                                    "arp" => "arp",
-                                    "icmp" => "icmp",
-                                    _ => "tcp",
-                                },
-                                scan: match hit.discovery {
-                                    "arp" => "arp",
-                                    "icmp" => "icmp",
-                                    "none" => "none",
-                                    _ => "connect",
-                                },
-                                latency_ms: hit.latency.as_millis(),
-                                status: "up",
-                                service: None,
-                                banner: None,
-                                discovery: Some(hit.discovery),
-                                mac: hit.mac.clone(),
-                                oui: hit.oui.clone(),
-                                reason: None,
-                                ptr: hit.ptr.clone(),
-                                ptr_confirmed: hit.ptr_confirmed,
-                                device_type: if classify {
-                                    Some(
-                                        hit.oui
-                                            .as_deref()
-                                            .map(asphyxia::classify::classify_oui)
-                                            .unwrap_or_else(asphyxia::classify::Device::unknown)
-                                            .device_type,
-                                    )
-                                } else {
-                                    None
-                                },
-                                device_confidence: if classify {
-                                    Some(
-                                        hit.oui
-                                            .as_deref()
-                                            .map(asphyxia::classify::classify_oui)
-                                            .unwrap_or_else(asphyxia::classify::Device::unknown)
-                                            .confidence,
-                                    )
-                                } else {
-                                    None
-                                },
-                                asn: info.map(|info| info.asn),
-                                asn_org: info.map(|info| info.asn_org),
-                                cloud: info.and_then(|info| info.cloud),
-                            }
-                        })
-                        .collect();
-                    if show_down {
-                        records.extend(available.down.iter().map(|down| {
-                            let mut record = down_record(down);
-                            let info = asn_info(down.ip, asn_enabled);
-                            record.asn = info.map(|info| info.asn);
-                            record.asn_org = info.map(|info| info.asn_org);
-                            record.cloud = info.and_then(|info| info.cloud);
-                            record
-                        }));
-                    }
                     if let Err(e) = emit(&records, format, output_file.as_deref()) {
                         eprintln!("{}", format!("Failed to write output: {}", e).red());
                     }

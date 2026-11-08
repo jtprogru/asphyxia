@@ -46,7 +46,7 @@ impl OutputFormat {
 ///
 /// The fields are a superset of what a port scan and an address scan each
 /// produce: `port` is present for port scans and omitted for host discovery.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ScanRecord {
     /// Target address (resolved IP for a port scan, host IP for discovery).
     pub ip: String,

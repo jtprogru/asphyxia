@@ -2034,3 +2034,59 @@ fn trace_rejects_invalid_hop_limits() {
         .assert()
         .failure();
 }
+
+#[test]
+fn report_markdown_and_html_come_from_the_scan_records() {
+    // -Pn avoids probing and makes the address report hermetic.
+    asphyxia()
+        .args(["as", "-t", "192.0.2.10", "--Pn", "--report", "md"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Asphyxia scan report"))
+        .stdout(predicate::str::contains("**Targets:** 192.0.2.10"))
+        .stdout(predicate::str::contains("## Hosts"))
+        .stdout(predicate::str::contains("192.0.2.10"));
+
+    asphyxia()
+        .args(["as", "-t", "192.0.2.10", "--Pn", "--report", "html"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<!DOCTYPE html>"))
+        .stdout(predicate::str::contains("192.0.2.10"));
+}
+
+#[test]
+fn report_file_and_full_banners_require_a_report() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("asphyxia-report-{}.md", std::process::id()));
+    asphyxia()
+        .args([
+            "as",
+            "-t",
+            "192.0.2.10",
+            "--Pn",
+            "--report",
+            "md",
+            "--report-file",
+            path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::eq(""));
+    let contents = std::fs::read_to_string(&path).expect("report file");
+    assert!(contents.starts_with("# Asphyxia scan report"));
+    let _ = std::fs::remove_file(&path);
+
+    asphyxia()
+        .args(["as", "-t", "192.0.2.10", "--Pn", "--full-banners"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn report_rejects_unknown_format() {
+    asphyxia()
+        .args(["as", "-t", "192.0.2.10", "--Pn", "--report", "pdf"])
+        .assert()
+        .failure();
+}

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Parser, ValueEnum};
 
 use crate::output::OutputFormat;
+use crate::report::ReportFormat;
 use crate::scanner::syn::ProbeMode;
 use crate::traceroute::Transport;
 
@@ -263,6 +264,9 @@ Required arguments:
     --sV                         Grab banners and identify the service on each open port
   --classify                   Infer device type from ports/banners/OUI (no new probes)
   --asn                        Add offline ASN/cloud hints from the bundled table
+  --report <md|html>           Generate a Markdown/HTML report from the scan records
+  --report-file <PATH>         Write the report to a file instead of stdout
+  --full-banners               Keep full sanitized banners in the report (default: truncated)
   --watch <INTERVAL>           Rescan every INTERVAL (30s, 5m) and emit JSONL change events
   --watch-count <N>            Stop watch mode after N passes (requires --watch)
     --resume <PATH>              Checkpoint progress and resume from PATH if it exists
@@ -376,6 +380,18 @@ pub enum Args {
         /// Add offline ASN/cloud hints from the bundled prefix table (no network)
         #[arg(long = "asn")]
         asn: bool,
+
+        /// Generate a Markdown or HTML report from the scan records
+        #[arg(long = "report", value_name = "FORMAT", value_enum)]
+        report: Option<ReportFormat>,
+
+        /// Write the report to a file instead of stdout
+        #[arg(long = "report-file", value_name = "PATH", requires = "report")]
+        report_file: Option<PathBuf>,
+
+        /// Include full (sanitized) banners in the report instead of truncating
+        #[arg(long = "full-banners", requires = "report")]
+        full_banners: bool,
 
         /// Rescan every INTERVAL (e.g. 30s, 5m) and emit JSON Lines change events
         #[arg(long = "watch", value_name = "INTERVAL")]
@@ -504,6 +520,18 @@ pub enum Args {
         /// Add offline ASN/cloud hints from the bundled prefix table (no network)
         #[arg(long = "asn")]
         asn: bool,
+
+        /// Generate a Markdown or HTML report from the scan records
+        #[arg(long = "report", value_name = "FORMAT", value_enum)]
+        report: Option<ReportFormat>,
+
+        /// Write the report to a file instead of stdout
+        #[arg(long = "report-file", value_name = "PATH", requires = "report")]
+        report_file: Option<PathBuf>,
+
+        /// Include full (sanitized) banners in the report instead of truncating
+        #[arg(long = "full-banners", requires = "report")]
+        full_banners: bool,
 
         /// Exclude these hosts/CIDRs from the scan (repeatable, comma-separated)
         #[arg(long = "exclude", value_name = "SPEC")]
