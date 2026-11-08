@@ -27,7 +27,7 @@ pub enum OutputFormat {
     Json,
     /// JSON Lines: one [`ScanRecord`] object per line.
     Jsonl,
-    /// CSV with a header row (`ip,port,proto,scan,status,latency_ms`).
+    /// CSV with a header row (`ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui`).
     Csv,
     /// Greppable plain text: one tab-separated line per result.
     Grep,
@@ -114,15 +114,37 @@ pub fn render(records: &[ScanRecord], format: OutputFormat) -> String {
     }
 }
 
+/// Escape one CSV field, quoting it when it contains a comma, quote, CR, or LF.
+/// Banners are sanitized to a single printable line upstream, but they can still
+/// contain commas or quotes.
+fn csv_field(value: &str) -> String {
+    if value.chars().any(|c| matches!(c, ',' | '"' | '\n' | '\r')) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 /// CSV with a fixed header. The `port` column is empty for host-discovery
-/// records, which have no port.
+/// records, which have no port; enrichment columns are empty when not collected.
 fn render_csv(records: &[ScanRecord]) -> String {
-    let mut out = String::from("ip,port,proto,scan,status,latency_ms\n");
+    let mut out =
+        String::from("ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n");
     for r in records {
         let port = r.port.map(|p| p.to_string()).unwrap_or_default();
         out.push_str(&format!(
-            "{},{},{},{},{},{}\n",
-            r.ip, port, r.proto, r.scan, r.status, r.latency_ms
+            "{},{},{},{},{},{},{},{},{},{},{}\n",
+            csv_field(&r.ip),
+            port,
+            r.proto,
+            r.scan,
+            r.status,
+            r.latency_ms,
+            csv_field(r.service.as_deref().unwrap_or("")),
+            csv_field(r.banner.as_deref().unwrap_or("")),
+            r.discovery.unwrap_or(""),
+            csv_field(r.mac.as_deref().unwrap_or("")),
+            csv_field(r.oui.as_deref().unwrap_or("")),
         ));
     }
     out
@@ -130,7 +152,9 @@ fn render_csv(records: &[ScanRecord]) -> String {
 
 /// Greppable plain text: one tab-separated line per result, no header, so it
 /// slots straight into `grep`/`awk`/`cut` pipelines. The port column is `-`
-/// for host-discovery records.
+/// for host-discovery records. The five enrichment columns after `latency_ms`
+/// are empty when not collected, so the original first six columns keep their
+/// positions.
 fn render_grep(records: &[ScanRecord]) -> String {
     let mut out = String::new();
     for r in records {
@@ -139,8 +163,18 @@ fn render_grep(records: &[ScanRecord]) -> String {
             .map(|p| p.to_string())
             .unwrap_or_else(|| "-".to_string());
         out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\n",
-            r.ip, port, r.proto, r.scan, r.status, r.latency_ms
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            r.ip,
+            port,
+            r.proto,
+            r.scan,
+            r.status,
+            r.latency_ms,
+            r.service.as_deref().unwrap_or(""),
+            r.banner.as_deref().unwrap_or(""),
+            r.discovery.unwrap_or(""),
+            r.mac.as_deref().unwrap_or(""),
+            r.oui.as_deref().unwrap_or(""),
         ));
     }
     out
@@ -213,18 +247,21 @@ mod tests {
         let mut lines = out.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "ip,port,proto,scan,status,latency_ms"
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui"
         );
-        assert_eq!(lines.next().unwrap(), "127.0.0.1,80,tcp,connect,open,3");
+        assert_eq!(
+            lines.next().unwrap(),
+            "127.0.0.1,80,tcp,connect,open,3,,,,,"
+        );
         // Host-discovery record has an empty port column.
-        assert_eq!(lines.next().unwrap(), "10.0.0.5,,tcp,connect,up,12");
+        assert_eq!(lines.next().unwrap(), "10.0.0.5,,tcp,connect,up,12,,,,,");
     }
 
     #[test]
     fn empty_csv_still_has_header() {
         assert_eq!(
             render(&[], OutputFormat::Csv),
-            "ip,port,proto,scan,status,latency_ms\n"
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n"
         );
     }
 
@@ -234,9 +271,12 @@ mod tests {
         let mut lines = out.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "127.0.0.1\t80\ttcp\tconnect\topen\t3"
+            "127.0.0.1\t80\ttcp\tconnect\topen\t3\t\t\t\t\t"
         );
-        assert_eq!(lines.next().unwrap(), "10.0.0.5\t-\ttcp\tconnect\tup\t12");
+        assert_eq!(
+            lines.next().unwrap(),
+            "10.0.0.5\t-\ttcp\tconnect\tup\t12\t\t\t\t\t"
+        );
     }
 
     #[test]
@@ -257,7 +297,9 @@ mod tests {
         let path = dir.join(format!("asphyxia-emit-test-{}.csv", std::process::id()));
         emit(&sample(), OutputFormat::Csv, Some(&path)).expect("write should succeed");
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.starts_with("ip,port,proto,scan,status,latency_ms\n"));
+        assert!(contents.starts_with(
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n"
+        ));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -294,8 +336,8 @@ mod tests {
             },
         ];
         let csv = render(&records, OutputFormat::Csv);
-        assert!(csv.contains("192.0.2.10,22,tcp,ack,unfiltered,4\n"));
-        assert!(csv.contains("192.0.2.10,23,tcp,ack,filtered,2000\n"));
+        assert!(csv.contains("192.0.2.10,22,tcp,ack,unfiltered,4,,,,,\n"));
+        assert!(csv.contains("192.0.2.10,23,tcp,ack,filtered,2000,,,,,\n"));
 
         let json = render(&records, OutputFormat::Json);
         assert!(json.contains("\"scan\":\"ack\""));
@@ -303,7 +345,7 @@ mod tests {
         assert!(!json.contains("\"status\":\"open\""));
 
         let grep = render(&records, OutputFormat::Grep);
-        assert!(grep.contains("192.0.2.10\t22\ttcp\tack\tunfiltered\t4\n"));
+        assert!(grep.contains("192.0.2.10\t22\ttcp\tack\tunfiltered\t4\t\t\t\t\t\n"));
     }
 
     #[test]
@@ -352,9 +394,9 @@ mod tests {
             },
         ];
         let csv = render(&records, OutputFormat::Csv);
-        assert!(csv.contains("192.0.2.10,22,tcp,fin,closed,4\n"));
-        assert!(csv.contains("192.0.2.10,23,tcp,null,open|filtered,2000\n"));
-        assert!(csv.contains("192.0.2.10,24,tcp,xmas,open|filtered,2000\n"));
+        assert!(csv.contains("192.0.2.10,22,tcp,fin,closed,4,,,,,\n"));
+        assert!(csv.contains("192.0.2.10,23,tcp,null,open|filtered,2000,,,,,\n"));
+        assert!(csv.contains("192.0.2.10,24,tcp,xmas,open|filtered,2000,,,,,\n"));
 
         let json = render(&records, OutputFormat::Json);
         for scan in ["fin", "null", "xmas"] {
@@ -366,7 +408,46 @@ mod tests {
         assert!(!json.contains("\"status\":\"open\""));
 
         let grep = render(&records, OutputFormat::Grep);
-        assert!(grep.contains("192.0.2.10\t22\ttcp\tfin\tclosed\t4\n"));
+        assert!(grep.contains("192.0.2.10\t22\ttcp\tfin\tclosed\t4\t\t\t\t\t\n"));
+    }
+
+    #[test]
+    fn enrichment_columns_are_rendered_in_csv_and_grep() {
+        let records = vec![ScanRecord {
+            ip: "192.0.2.5".to_string(),
+            port: None,
+            proto: "arp",
+            scan: "arp",
+            latency_ms: 2,
+            status: "up",
+            service: Some("http".to_string()),
+            banner: Some("HTTP/1.1 200 OK, \"ok\"".to_string()),
+            discovery: Some("arp"),
+            mac: Some("aa:bb:cc:dd:ee:ff".to_string()),
+            oui: Some("aa-bb-cc".to_string()),
+        }];
+        let csv = render(&records, OutputFormat::Csv);
+        assert!(
+            csv.contains(
+                "192.0.2.5,,arp,arp,up,2,http,\"HTTP/1.1 200 OK, \"\"ok\"\"\",arp,aa:bb:cc:dd:ee:ff,aa-bb-cc\n"
+            ),
+            "{csv}"
+        );
+        let grep = render(&records, OutputFormat::Grep);
+        assert!(
+            grep.contains(
+                "192.0.2.5\t-\tarp\tarp\tup\t2\thttp\tHTTP/1.1 200 OK, \"ok\"\tarp\taa:bb:cc:dd:ee:ff\taa-bb-cc\n"
+            ),
+            "{grep}"
+        );
+    }
+
+    #[test]
+    fn csv_field_escapes_commas_quotes_and_newlines() {
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("a\"b"), "\"a\"\"b\"");
+        assert_eq!(csv_field("a\nb"), "\"a\nb\"");
     }
 
     #[test]

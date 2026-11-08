@@ -338,12 +338,7 @@ pub enum Args {
         nmap: bool,
 
         /// Custom nmap arguments (replace the default -sV -sC); implies --nmap
-        #[arg(
-            long = "nmap-args",
-            value_name = "ARGS",
-            requires = "nmap",
-            allow_hyphen_values = true
-        )]
+        #[arg(long = "nmap-args", value_name = "ARGS", allow_hyphen_values = true)]
         nmap_args: Option<String>,
 
         /// Connection timeout in milliseconds

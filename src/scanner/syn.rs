@@ -444,8 +444,8 @@ pub fn probe_port(
     // caller fall back rather than send probes into a void.
     let receiver = receiver()?;
 
-    // Respect the global rate limit (no-op when none is installed).
-    crate::rate::gate();
+    // Respect the rate cap and this host's own --delay (no-op when unset).
+    crate::rate::gate_for(IpAddr::V4(dst));
 
     let dbg = debug_enabled();
     let src = local_ipv4_for(dst)?;

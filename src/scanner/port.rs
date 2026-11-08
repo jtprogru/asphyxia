@@ -172,8 +172,6 @@ pub fn scan_port_with_retries(
 
 /// Make a single connection attempt to `host:port` and classify the outcome.
 fn probe_port(host: &str, port: u16, timeout: Duration) -> Probe {
-    // Respect the global rate limit (no-op when none is installed).
-    crate::rate::gate();
     let Some(socket_addr) = host_port(host, port)
         .to_socket_addrs()
         .ok()
@@ -182,6 +180,8 @@ fn probe_port(host: &str, port: u16, timeout: Duration) -> Probe {
         // Unresolvable: retrying will not help, so treat it as a closed result.
         return Probe::Closed;
     };
+    // Respect the rate cap and this host's own --delay (no-op when unset).
+    crate::rate::gate_for(socket_addr.ip());
     let start = Instant::now();
     // Open through the interface-binding helper so `--interface` pins the probe
     // to the requested link (a no-op when none was set).
@@ -284,9 +284,6 @@ pub fn scan_udp_port(host: String, port: u16, timeout: Option<Duration>, retries
 
 /// Send one UDP datagram and classify what comes back.
 fn probe_udp(host: &str, port: u16, timeout: Duration) -> UdpProbe {
-    // Respect the global rate limit (no-op when none is installed).
-    crate::rate::gate();
-
     let Some(target) = host_port(host, port)
         .to_socket_addrs()
         .ok()
@@ -295,6 +292,8 @@ fn probe_udp(host: &str, port: u16, timeout: Duration) -> UdpProbe {
         // Unresolvable: nothing to probe.
         return UdpProbe::Closed;
     };
+    // Respect the rate cap and this host's own --delay (no-op when unset).
+    crate::rate::gate_for(target.ip());
 
     // Bind an ephemeral local socket in the target's address family, pinned to
     // `--interface` when one was requested (a no-op otherwise), and connect it.
@@ -360,24 +359,34 @@ fn udp_probe_payload(port: u16) -> Vec<u8> {
             pkt[0] = 0x1b;
             pkt
         }
-        // SNMP: a GET request for the system description OID (1.3.6.1.2.1.1.5)
-        // with the default "public" community — most agents answer it.
-        161 => {
-            let mut pkt = vec![0x02, 0x00]; // version: SNMPv1 (0)
-            pkt.extend_from_slice(b"public"); // community string
-            let mut seq = vec![0x30u8]; // SEQUENCE (request)
-            seq.push(0x00); // request-id: 0
-            seq.push(0x00); // error-status: no-error
-            seq.push(0x00); // error-index: 0
-            let mut varbind = vec![0x30u8]; // SEQUENCE (varbind-list)
-            let mut oid = vec![0x06u8, 0x07]; // OID, length 7
-            oid.extend_from_slice(&[1, 3, 6, 1, 2, 1, 1, 5]);
-            varbind.push(0x05); // NULL value (no type byte needed for NULL)
-            varbind.extend_from_slice(&oid);
-            seq.extend_from_slice(&varbind);
-            pkt.extend_from_slice(&seq);
-            pkt
-        }
+        // SNMPv1 GetRequest for sysDescr.0 (1.3.6.1.2.1.1.1.0) with the
+        // default "public" community. This is a complete, length-correct BER
+        // message — a malformed ASN.1 body is silently dropped by every agent.
+        //
+        //   SEQUENCE (38)
+        //     INTEGER version 0
+        //     OCTET STRING "public"
+        //     GetRequest (25)
+        //       INTEGER request-id 1
+        //       INTEGER error-status 0
+        //       INTEGER error-index 0
+        //       SEQUENCE (14)
+        //         SEQUENCE (12)
+        //           OID 1.3.6.1.2.1.1.1.0
+        //           NULL
+        161 => vec![
+            0x30, 0x26, // SEQUENCE, 38 bytes
+            0x02, 0x01, 0x00, // INTEGER version: SNMPv1
+            0x04, 0x06, b'p', b'u', b'b', b'l', b'i', b'c', // community
+            0xA0, 0x19, // GetRequest PDU, 25 bytes
+            0x02, 0x01, 0x01, // request-id
+            0x02, 0x01, 0x00, // error-status: no-error
+            0x02, 0x01, 0x00, // error-index: 0
+            0x30, 0x0E, // varbind list, 14 bytes
+            0x30, 0x0C, // varbind, 12 bytes
+            0x06, 0x08, 0x2B, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00, // OID
+            0x05, 0x00, // NULL
+        ],
         // NetBIOS name service: a node status query (0x21) for the null name.
         137 => {
             let mut pkt = vec![0x80, 0x00]; // transaction id
@@ -408,7 +417,7 @@ fn udp_probe_payload(port: u16) -> Vec<u8> {
             }
             pkt.push(0x00); // root terminator
             pkt.extend_from_slice(&[0x00, 0x0c]); // qtype: PTR (12)
-            pkt.extend_from_slice(&[0xc0, 0x0c]); // qclass: IN | cache-flush
+            pkt.extend_from_slice(&[0x00, 0x01]); // qclass: IN
             pkt
         }
         // Others: an empty datagram is enough to trigger an ICMP unreachable
@@ -568,15 +577,24 @@ mod tests {
     }
 
     #[test]
-    fn snmp_payload_is_a_get_request_with_public_community() {
+    fn snmp_payload_is_a_complete_ber_get_request() {
         let snmp = udp_probe_payload(161);
-        // SNMPv1 version (0) in the first two bytes.
-        assert_eq!(&snmp[0..2], &[0x02, 0x00]);
-        // The default "public" community string follows.
-        assert!(snmp.windows(6).any(|w| w == b"public"));
-        // A GET request carries the system description OID (1.3.6.1.2.1.1.5).
-        let oid: Vec<u8> = vec![1, 3, 6, 1, 2, 1, 1, 5];
-        assert!(snmp.windows(oid.len()).any(|w| w == oid.as_slice()));
+        let expected = [
+            0x30, 0x26, // SEQUENCE, 38 bytes
+            0x02, 0x01, 0x00, // version: SNMPv1
+            0x04, 0x06, b'p', b'u', b'b', b'l', b'i', b'c', // community
+            0xA0, 0x19, // GetRequest, 25 bytes
+            0x02, 0x01, 0x01, // request-id
+            0x02, 0x01, 0x00, // error-status
+            0x02, 0x01, 0x00, // error-index
+            0x30, 0x0E, // varbind list, 14 bytes
+            0x30, 0x0C, // varbind, 12 bytes
+            0x06, 0x08, 0x2B, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00, // sysDescr.0
+            0x05, 0x00, // NULL
+        ];
+        assert_eq!(snmp, expected);
+        // The outer SEQUENCE length must cover exactly the remaining bytes.
+        assert_eq!(usize::from(snmp[1]) + 2, snmp.len());
     }
 
     #[test]
@@ -605,6 +623,9 @@ mod tests {
             mdns.windows(expected.len())
                 .any(|w| w == expected.as_slice())
         );
+        // Query ends with qtype PTR (12) and qclass IN (1); a compression
+        // pointer or a cache-flush bit here would make the question invalid.
+        assert_eq!(&mdns[mdns.len() - 4..], &[0x00, 0x0c, 0x00, 0x01]);
     }
 
     #[test]

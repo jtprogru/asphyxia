@@ -47,6 +47,9 @@ pub fn detect(ip: &str, port: u16, timeout: Duration) -> (Option<String>, Option
 /// if it is silent, nudge it with an HTTP request and read again. Returns the
 /// sanitized first line, or `None` if nothing readable came back.
 fn grab_banner(addr: SocketAddr, timeout: Duration) -> Option<String> {
+    // Banner grabbing opens a second connection to the same host, so it must
+    // pass through the pacer too — otherwise --rate/--delay undercount it.
+    crate::rate::gate_for(addr.ip());
     // Bind to `--interface` when set (a no-op otherwise) so the banner grab
     // follows the same route the port probe did.
     let mut stream = iface::tcp_connect_timeout(addr, timeout).ok()?;

@@ -1,4 +1,4 @@
-//! Global rate limiting and per-probe pacing for scan probes.
+//! Global rate limiting and per-host probe pacing for scan probes.
 //!
 //! `--rate` caps how many connection attempts are made per second across the
 //! whole scan, so a large sweep does not overwhelm the network or trip a
@@ -7,36 +7,50 @@
 //! through: each call reserves the next evenly-spaced time slot and sleeps until
 //! it comes due.
 //!
-//! `--delay`/`--jitter` add a per-probe minimum interval, randomized within
+//! `--delay`/`--jitter` add a *per-host* minimum interval, randomized within
 //! ±PCT when jitter is set (`--delay 250 --jitter 20` → 200–300 ms). The delay
-//! is enforced by the same [`RateLimiter`] as the rate cap: each probe reserves
-//! a slot spaced by `max(rate_interval, delayed_interval)`, so the two limits
-//! compose and the stricter one always wins. Jitter randomizes the interval per
-//! probe without any extra dependency — a small xorshift64* PRNG seeded from the
+//! is tracked per target address, so probes against different hosts still run
+//! concurrently; `--rate` remains a single global cap across all of them. When a
+//! probe needs both, the later of its global rate slot and its host slot wins,
+//! so neither bound is exceeded. Jitter randomizes each probe's host interval
+//! without any extra dependency — a small xorshift64* PRNG seeded from the
 //! system time plus an atomic counter gives each thread a distinct stream.
 //!
 //! Like the thread pool, the limiter is installed once before the scan starts
-//! and consulted from the low-level probe paths via [`gate`]. When no limit or
-//! delay is installed, [`gate`] is a cheap no-op.
+//! and consulted from the low-level probe paths via [`gate`]/[`gate_for`]. When
+//! no limit or delay is installed, both are a cheap no-op.
 
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// A token-bucket-style pacer that admits at most one probe per `interval`.
+/// The reservation state guarded by one mutex: a single global rate slot plus
+/// one slot per host for `--delay`.
+#[derive(Debug)]
+struct Schedule {
+    /// The earliest instant the next global rate slot may start.
+    next_global: Instant,
+    /// The earliest instant the next probe to a given host may start.
+    next_host: HashMap<IpAddr, Instant>,
+}
+
+/// A token-bucket-style pacer that admits at most one probe per `interval`
+/// globally and one per host per (jittered) delay.
 #[derive(Debug)]
 pub struct RateLimiter {
     /// The base spacing between admitted probes, from the rate cap. Zero when no
     /// rate limit is installed (delay-only pacing).
     interval: Duration,
-    /// Minimum inter-probe delay in milliseconds (`--delay`), or 0 for none.
+    /// Minimum inter-probe delay per host in milliseconds (`--delay`), or 0.
     delay_ms: u64,
     /// Jitter as a percentage of the delay (`--jitter`, 0–100); 0 means no
     /// randomization.
     jitter_pct: u32,
-    /// The earliest instant the next probe may start.
-    next: Mutex<Instant>,
+    /// Global and per-host reservation state.
+    schedule: Mutex<Schedule>,
 }
 
 impl RateLimiter {
@@ -58,7 +72,10 @@ impl RateLimiter {
             interval,
             delay_ms,
             jitter_pct: jitter_pct.min(100),
-            next: Mutex::new(Instant::now()),
+            schedule: Mutex::new(Schedule {
+                next_global: Instant::now(),
+                next_host: HashMap::new(),
+            }),
         })
     }
 
@@ -96,19 +113,51 @@ impl RateLimiter {
         base.max(delayed)
     }
 
-    /// Block until this probe's reserved slot comes due.
+    /// Block until a global slot comes due. This applies the rate cap and, for
+    /// callers without a host identity, the delay as a global interval.
     pub fn acquire(&self) {
         let interval = self.effective_interval();
         let scheduled = {
-            let mut next = self.next.lock().expect("rate limiter mutex poisoned");
-            let (scheduled, new_next) = reserve(Instant::now(), *next, interval);
-            *next = new_next;
+            let mut schedule = self.schedule.lock().expect("rate limiter mutex poisoned");
+            let (scheduled, new_next) = reserve(Instant::now(), schedule.next_global, interval);
+            schedule.next_global = new_next;
             scheduled
         };
-        let wait = scheduled.saturating_duration_since(Instant::now());
-        if !wait.is_zero() {
-            thread::sleep(wait);
-        }
+        sleep_until(scheduled);
+    }
+
+    /// Block until this host's reserved slot comes due, respecting both the
+    /// global rate cap and the per-host delay. Different hosts do not wait on
+    /// each other's delay; only the shared rate slot is global.
+    pub fn acquire_host(&self, host: IpAddr) {
+        let now = Instant::now();
+        let scheduled = {
+            let mut schedule = self.schedule.lock().expect("rate limiter mutex poisoned");
+
+            // Reserve the next global rate slot. The per-host delay is not part
+            // of this interval: it must not serialize different hosts.
+            let (global_slot, new_global) = reserve(now, schedule.next_global, self.interval);
+            schedule.next_global = new_global;
+
+            let host_next = schedule.next_host.get(&host).copied().unwrap_or(now);
+            let host_gap = if self.delay_ms == 0 {
+                Duration::ZERO
+            } else {
+                jittered_delay(self.delay_ms, self.jitter_pct)
+            };
+            let scheduled = global_slot.max(host_next);
+            schedule.next_host.insert(host, scheduled + host_gap);
+            scheduled
+        };
+        sleep_until(scheduled);
+    }
+}
+
+/// Sleep until `scheduled`, if it is still in the future.
+fn sleep_until(scheduled: Instant) {
+    let wait = scheduled.saturating_duration_since(Instant::now());
+    if !wait.is_zero() {
+        thread::sleep(wait);
     }
 }
 
@@ -123,21 +172,31 @@ fn reserve(now: Instant, next: Instant, interval: Duration) -> (Instant, Instant
 /// The process-wide limiter, installed at most once via [`install`].
 static LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 
-/// Install the global pacer with a rate cap of `pps` probes per second and an
-/// optional minimum inter-probe delay (ms) randomized within ±`jitter_pct`. A
-/// `pps` of 0 and zero delay installs nothing. Calling more than once keeps the
-/// first limiter.
+/// Install the process-wide pacer with a global rate cap of `pps` probes per
+/// second and an optional per-host minimum delay (ms) randomized within
+/// ±`jitter_pct`. A `pps` of 0 and zero delay installs nothing. Calling more
+/// than once keeps the first limiter.
 pub fn install(pps: u32, delay_ms: u64, jitter_pct: u32) {
     if let Some(limiter) = RateLimiter::new(pps, delay_ms, jitter_pct) {
         let _ = LIMITER.set(limiter);
     }
 }
 
-/// Pass through the global pacer, blocking until a slot is free. A no-op when no
-/// limiter is installed.
+/// Pass through the global pacer without a host identity, blocking until a slot
+/// is free. Applies the rate cap and the delay globally; probe paths that know
+/// their target should use [`gate_for`] so `--delay` stays per host. A no-op
+/// when no limiter is installed.
 pub fn gate() {
     if let Some(limiter) = LIMITER.get() {
         limiter.acquire();
+    }
+}
+
+/// Pass through the pacer for `host`: the global rate cap plus that host's own
+/// `--delay`/`--jitter` interval. A no-op when no limiter is installed.
+pub fn gate_for(host: IpAddr) {
+    if let Some(limiter) = LIMITER.get() {
+        limiter.acquire_host(host);
     }
 }
 
@@ -295,6 +354,52 @@ mod tests {
             elapsed >= Duration::from_millis(180),
             "five probes at 50 ms should take ≥200 ms, took {:?}",
             elapsed
+        );
+    }
+
+    #[test]
+    fn per_host_delays_do_not_serialize_different_hosts() {
+        // A 200 ms per-host delay must not make host B wait for host A's slot.
+        let limiter = RateLimiter::new(0, 200, 0).expect("delay-only");
+        let a: IpAddr = "10.0.0.1".parse().unwrap();
+        let b: IpAddr = "10.0.0.2".parse().unwrap();
+        let start = Instant::now();
+        limiter.acquire_host(a);
+        limiter.acquire_host(b);
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "different hosts must not share the delay: took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn same_host_delay_is_enforced() {
+        let limiter = RateLimiter::new(0, 40, 0).expect("delay-only");
+        let a: IpAddr = "10.0.0.1".parse().unwrap();
+        let start = Instant::now();
+        limiter.acquire_host(a); // first slot is immediate
+        limiter.acquire_host(a); // second waits one delay
+        assert!(
+            start.elapsed() >= Duration::from_millis(30),
+            "two probes to one host at 40 ms should take ≥40 ms, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn rate_cap_applies_across_different_hosts() {
+        // 50 pps = 20 ms between probes globally, even for different hosts.
+        let limiter = RateLimiter::per_second(50).expect("rate cap");
+        let a: IpAddr = "10.0.0.1".parse().unwrap();
+        let b: IpAddr = "10.0.0.2".parse().unwrap();
+        let start = Instant::now();
+        limiter.acquire_host(a);
+        limiter.acquire_host(b);
+        assert!(
+            start.elapsed() >= Duration::from_millis(15),
+            "the global rate cap should space different hosts, took {:?}",
+            start.elapsed()
         );
     }
 

@@ -132,8 +132,8 @@ fn probe_address(ip: IpAddr, timeout: Duration) -> Option<HostHit> {
 /// Make a single availability probe against one port. Returns `Some` when the
 /// host answers (open, or refused/reset) and `None` on silence.
 fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> Option<HostHit> {
-    // Respect the global rate limit (no-op when none is installed).
-    crate::rate::gate();
+    // Respect the rate cap and this host's own --delay (no-op when unset).
+    crate::rate::gate_for(ip);
     let start = Instant::now();
     // Probe through the interface-binding helper so `--interface` pins host
     // discovery to the requested link (a no-op when none was set).

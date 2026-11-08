@@ -196,12 +196,14 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 
 #### UDP scanning (`--udp`)
 
-Pass `-u`/`--udp` to probe UDP ports instead of TCP. UDP has no handshake, so results are inherently less certain than TCP and use two statuses:
+Pass `-u`/`--udp` to probe UDP ports instead of TCP. UDP has no handshake, so results are inherently less certain than TCP and use four states:
 
-- **`open`** — the port sent a reply. For a few well-known ports asphyxia sends a protocol-specific probe (a DNS query on 53, an NTP client request on 123) to coax a reply and turn what would otherwise be a guess into a definite `open`.
+- **`open`** — the port sent a reply. For a few well-known ports asphyxia sends a protocol-specific probe (a DNS query on 53, an NTP client request on 123, an SNMP GET on 161) to coax a reply and turn what would otherwise be a guess into a definite `open`.
+- **`closed`** — an ICMP port-unreachable (type 3, code 3) came back; the host has no service on that port.
+- **`filtered`** — another ICMP unreachable (type 3 codes 1/2/9/10/13) says a device dropped the probe, so the state behind it is unknown.
 - **`open|filtered`** — the port stayed silent within the timeout. The datagram may have been dropped, the service may not answer this particular probe, or a firewall may be filtering it — these are indistinguishable without elevated privileges.
 
-A port that answers with an ICMP port-unreachable is **closed** and is simply not reported (like a closed TCP port). In machine output the `proto` field is `"udp"` and `status` is `"open"` or `"open|filtered"`. Because silent ports wait out the full `--timeout`, UDP scans of many ports are slower than TCP — narrow the port set (e.g. `-s 53,123,161,500` or `--top-ports`) and consider `--retries 1` on a lossy link.
+Every probed UDP port is reported, including `closed` and `filtered`, because silence and ICMP answers are results too. In machine output the `proto` field is `"udp"` and `status` is one of `open`, `closed`, `filtered`, or `open|filtered`. Because silent ports wait out the full `--timeout`, UDP scans of many ports are slower than TCP — narrow the port set (e.g. `-s 53,123,161,500` or `--top-ports`) and consider `--retries 1` on a lossy link.
 
 ```bash
 asphyxia ps -t 192.168.1.1 -s 53,123,161 --udp
@@ -303,7 +305,7 @@ A bare empty datagram rarely elicits a reply, so most UDP ports look `open|filte
 
 - **DNS/53** — a standard query for the root NS record (RD set).
 - **NTP/123** — a 48-byte client request (LI=0, VN=3, mode=3).
-- **SNMP/161** — a GET request for `systemDescription` with the default `public` community.
+- **SNMP/161** — a valid SNMPv1 GET request for `sysDescr.0` (`1.3.6.1.2.1.1.1.0`) with the default `public` community.
 - **NetBIOS/137** — a node status query (0x21) for the null name.
 - **mDNS/5353** — a PTR query for `_http._tcp.local.`.
 
@@ -325,7 +327,7 @@ asphyxia ps -t example.com -s 1,9 --udp -o jsonl
 
 Details and limitations:
 
-- **Every probed port is reported**, like an ACK scan: silence *is* the finding, so `open|filtered` ports are results too. Keep the port set narrow (`--top-ports`, `-s`) — a silent port waits out the full `--timeout`.
+- **Every probed port is reported**, like an ACK scan: `closed`, `filtered` and `open|filtered` are all findings, not omissions. Keep the port set narrow (`--top-ports`, `-s`) — a silent port waits out the full `--timeout`.
 - **ICMP rate-limiting (RFC 1812)** — many hosts cap their ICMP reply rate, so a lost unreachable can make a closed port look `open|filtered`. `--retries` re-probes silence only; refusals are final and never retried.
 - **No raw sockets needed** — UDP probes run over plain UDP sockets (no root/`CAP_NET_RAW`), with ICMP unreachables surfaced by the kernel as socket errors. The pcap receiver is not involved in UDP scanning.
 - **`--sV` does nothing here** and says so: it needs a TCP stream, which UDP has no equivalent of. `--nmap` hands off open ports to nmap for a deep dive (`-sU -sV`).
@@ -437,7 +439,7 @@ How it behaves:
 
 ### Machine-readable output (`--output`)
 
-By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto` (`tcp`, `udp`, or `arp`), `scan` (the probe that produced it: `connect`, `syn`, `ack`, `fin`, `null`, `xmas`, `arp`, or `none` for `-Pn`), `latency_ms`, and `status`. JSON and JSON Lines also carry the optional enrichment fields `service`, `banner`, `discovery`, `mac`, and `oui` when they are known; CSV and grep keep their fixed six-column schema.
+By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto` (`tcp`, `udp`, or `arp`), `scan` (the probe that produced it: `connect`, `syn`, `ack`, `fin`, `null`, `xmas`, `arp`, or `none` for `-Pn`), `latency_ms`, and `status`, plus the optional enrichment fields `service`, `banner`, `discovery`, `mac`, and `oui` when they are known. JSON/JSON Lines omit unknown enrichment; CSV always has all eleven columns; grep emits them tab-separated after `latency_ms`, so the original first six columns keep their positions.
 
 ```bash
 # One JSON object per open port, on its own line (JSON Lines)
@@ -447,7 +449,7 @@ asphyxia ps -t example.com -s 22,80,443 -o jsonl
 # A single JSON array of available hosts
 asphyxia as -s 192.168.1.0/24 -o json
 
-# CSV with a header row (ip,port,proto,scan,status,latency_ms)
+# CSV with a header row (ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui)
 asphyxia ps -t example.com --top-ports 100 -o csv
 
 # Greppable, tab-separated columns for grep/awk/cut
@@ -495,7 +497,9 @@ asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap
 asphyxia ps -t scanme.nmap.org --top-ports 100 --nmap --nmap-args "-A -T4"
 ```
 
-By default asphyxia runs `nmap -sV -sC -p <open-ports> <host>`. With `--nmap-args` your flags replace `-sV -sC`, while asphyxia still supplies `-p <open-ports>` and the target. If nmap is not on your `PATH`, asphyxia prints an install hint instead of a deep dive. Nmap's output streams straight to the terminal, so combine `--nmap` with the human (`text`) output rather than a machine format.
+By default asphyxia runs `nmap -sV -sC -p <open-ports> <host>` for a TCP scan and `nmap -sU -sV -p <open-ports> <host>` for a UDP scan (a plain `-sV` would probe the same port numbers over TCP). With `--nmap-args` your flags replace the defaults, while asphyxia still supplies `-p <open-ports>` and the target; `--nmap-args` also implies `--nmap`. If nmap is not on your `PATH`, asphyxia prints an install hint instead of a deep dive.
+
+Nmap's output streams straight to stdout, so `--nmap` is rejected when a machine format (`-o json|jsonl|csv|grep`) would also write there — use `text` output, or send the machine stream to a file with `--output-file`.
 
 ## Configuration file (`~/.asphyxia.toml`)
 
@@ -545,7 +549,7 @@ asphyxia ps -t example.com --top-ports 1000 --exclude-ports 9100,631
 asphyxia ps -t example.com --top-ports 100 -o csv --output-file ports.csv
 
 # Greppable, tab-separated columns for awk/cut
-asphyxia ps -t example.com -s 22,80,443 -o grep | awk -F'\t' '$4=="open"{print $1":"$2}'
+asphyxia ps -t example.com -s 22,80,443 -o grep | awk -F'\t' '$5=="open"{print $1":"$2}'
 
 # JSON Lines into jq (progress bar and errors are on stderr)
 asphyxia ps -t example.com -r 1 1024 -o jsonl 2>/dev/null | jq -c 'select(.port == 443)'
@@ -644,7 +648,7 @@ To tune a scan:
 - **`--timeout`** — on a responsive LAN a shorter timeout (e.g. `--timeout 500`) makes unreachable hosts give up much sooner.
 - **`--retries`** — on a lossy network (Wi-Fi, VPN, distant hosts) a dropped SYN makes an open port or live host look closed/down. A small value like `--retries 1` or `--retries 2` re-probes only when a probe got *no answer* (timeout/unreachable); a port that actively refuses the connection has already answered, so it is never retried and closed-port scans stay fast.
 - **`--rate`** — cap the number of connection attempts per second across the whole scan (e.g. `--rate 1000`). This bounds how hard the scan hits the network regardless of `--concurrency`: a single global pacer admits one probe per `1/rate` seconds, so highly-concurrent scans still stay under the limit. Leave it unset for no cap.
-- **`--delay <MS>` / `--jitter <PCT>`** — set a minimum inter-probe delay (e.g. `--delay 250`) and optionally randomize each probe's interval within ±PCT of that value (`--jitter 20` → 200–300 ms). The delay is enforced by the same global pacer as `--rate`: each probe reserves a slot spaced by `max(rate_interval, delayed_interval)`, so combining them never exceeds either bound — the stricter one always wins. Applies to all scan modes (connect, SYN, ACK, FIN/NULL/XMAS, UDP). Without either flag the default behavior is unchanged: no delay, no jitter.
+- **`--delay <MS>` / `--jitter <PCT>`** — set a minimum interval between probes to the *same host* (e.g. `--delay 250`) and optionally randomize it within ±PCT (`--jitter 20` → 200–300 ms). The delay is tracked per target, so different hosts still run concurrently; `--rate` remains a single global cap. A probe waits for whichever slot is later, so combining them never exceeds either bound. Applies to all scan modes (connect, SYN, ACK, FIN/NULL/XMAS, UDP) and to `--sV` banner grabs. Without either flag the default behavior is unchanged: no delay, no jitter.
 - **`-T0`..`-T5`** — timing profiles that preset `--timeout`, `--concurrency`, `--retries`, and `--rate` in one shot, from `-T0` (paranoid: serial and slow) through `-T3` (the normal defaults) to `-T5` (insane: fastest, widest concurrency, no cap). Any individual flag still overrides the profile, e.g. `-T4 --timeout 800`.
 
 For example, a `/24` with the defaults completes in roughly one timeout window instead of serially walking every address.

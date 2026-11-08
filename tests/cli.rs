@@ -328,7 +328,9 @@ fn port_scan_csv_emits_header_even_with_no_open_ports() {
         .args(["ps", "-t", "127.0.0.1", "-s", "1", "-o", "csv"])
         .assert()
         .success()
-        .stdout(predicate::eq("ip,port,proto,scan,status,latency_ms\n"));
+        .stdout(predicate::eq(
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n",
+        ));
 }
 
 #[test]
@@ -412,7 +414,9 @@ fn config_supplies_defaults_that_flags_override() {
         .args(["ps", "-t", "127.0.0.1", "-s", "1", "-o", "csv"])
         .assert()
         .success()
-        .stdout(predicate::eq("ip,port,proto,scan,status,latency_ms\n"));
+        .stdout(predicate::eq(
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n",
+        ));
 
     let _ = std::fs::remove_file(&path);
 }
@@ -906,10 +910,10 @@ fn default_behavior_is_unchanged_without_delay() {
 }
 
 #[test]
-fn delay_warns_when_the_scan_would_take_hours() {
-    // A 10 s delay over 100 ports × 1 host at concurrency 256 is ~4 seconds —
-    // not enough to trigger the warning. But a 1000 ms delay over 1000 ports ×
-    // 10 hosts at concurrency 1 is ~10,000 s ≈ 2.8 h, which must warn on stderr.
+fn delay_does_not_warn_for_a_short_scan() {
+    // 1 s over five ports on one host is ~5 s, well under the warning
+    // threshold. (The threshold itself is covered by unit tests on
+    // `minimum_scan_seconds`, since triggering it would sleep for hours.)
     asphyxia()
         .args([
             "ps",
@@ -919,15 +923,14 @@ fn delay_warns_when_the_scan_would_take_hours() {
             "1,2,3,4,5",
             "--delay",
             "1000",
-            "--concurrency",
-            "1",
             "--timeout",
             "300",
             "-o",
             "json",
         ])
         .assert()
-        .success();
+        .success()
+        .stderr(predicate::str::contains("will take at least").not());
 }
 
 #[test]
@@ -1283,13 +1286,25 @@ fn resume_skips_completed_work_and_reuses_recorded_findings() {
 }
 
 #[test]
-fn nmap_args_requires_the_nmap_flag() {
-    // --nmap-args without --nmap is a parse error (clap `requires`).
+fn nmap_args_implies_nmap_without_requiring_the_flag() {
+    // --nmap-args implies --nmap. Port 1 is closed, so no handoff runs; a
+    // successful parse/scan proves the flag no longer requires --nmap.
     asphyxia()
-        .args(["ps", "-t", "127.0.0.1", "-s", "80", "--nmap-args", "-A"])
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "--nmap-args", "-A"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No open ports found"));
+}
+
+#[test]
+fn nmap_is_rejected_with_machine_output_on_stdout() {
+    // nmap writes to stdout; allowing it alongside JSON/JSONL would corrupt
+    // the stream. The flag combination must fail before scanning.
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "--nmap", "-o", "jsonl"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("nmap"));
+        .stderr(predicate::str::contains("cannot be combined"));
 }
 
 #[test]
@@ -1412,7 +1427,10 @@ fn output_file_writes_machine_output_and_keeps_stdout_clean() {
         .stdout(predicate::eq(""));
 
     let contents = std::fs::read_to_string(&path).expect("output file should exist");
-    assert!(contents.starts_with("ip,port,proto,scan,status,latency_ms\n"));
+    assert!(
+        contents
+            .starts_with("ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui\n")
+    );
     let _ = std::fs::remove_file(&path);
 }
 

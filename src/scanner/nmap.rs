@@ -8,19 +8,30 @@
 use std::io;
 use std::process::{Command, ExitStatus};
 
-/// Default nmap scan flags used when the user does not supply their own via
-/// `--nmap-args`: service/version detection plus the default script set.
+/// Default nmap scan flags for a TCP handoff when the user does not supply their
+/// own via `--nmap-args`: service/version detection plus the default script set.
 pub const DEFAULT_NMAP_ARGS: &[&str] = &["-sV", "-sC"];
+
+/// Default nmap scan flags for a UDP handoff: UDP scanning plus version
+/// detection. A plain `-sV` would probe the same port numbers over TCP and
+/// report nothing for a UDP-only service.
+pub const DEFAULT_UDP_NMAP_ARGS: &[&str] = &["-sU", "-sV"];
 
 /// Build the full nmap argument vector for `host` and its open `ports`.
 ///
-/// When `extra` is non-empty it replaces the [`DEFAULT_NMAP_ARGS`] scan flags;
-/// either way asphyxia always appends `-p <ports>` and the target host, since it
-/// owns which ports to hand off. Ports are emitted in the given order as a
-/// comma-separated list.
-pub fn nmap_args(host: &str, ports: &[u16], extra: &[String]) -> Vec<String> {
+/// When `extra` is non-empty it replaces the default scan flags; either way
+/// asphyxia always appends `-p <ports>` and the target host, since it owns which
+/// ports to hand off. Ports are emitted in the given order as a comma-separated
+/// list. A UDP handoff defaults to [`DEFAULT_UDP_NMAP_ARGS`] instead of the TCP
+/// profile.
+pub fn nmap_args(host: &str, ports: &[u16], extra: &[String], udp: bool) -> Vec<String> {
     let mut args: Vec<String> = if extra.is_empty() {
-        DEFAULT_NMAP_ARGS.iter().map(|s| s.to_string()).collect()
+        let defaults = if udp {
+            DEFAULT_UDP_NMAP_ARGS
+        } else {
+            DEFAULT_NMAP_ARGS
+        };
+        defaults.iter().map(|s| s.to_string()).collect()
     } else {
         extra.to_vec()
     };
@@ -49,9 +60,9 @@ pub fn split_extra_args(raw: &str) -> Vec<String> {
 ///
 /// Returns the process exit status, or an [`io::Error`] if nmap could not be
 /// started — notably [`io::ErrorKind::NotFound`] when nmap is not on `PATH`.
-pub fn run_nmap(host: &str, ports: &[u16], extra: &[String]) -> io::Result<ExitStatus> {
+pub fn run_nmap(host: &str, ports: &[u16], extra: &[String], udp: bool) -> io::Result<ExitStatus> {
     Command::new("nmap")
-        .args(nmap_args(host, ports, extra))
+        .args(nmap_args(host, ports, extra, udp))
         .status()
 }
 
@@ -61,7 +72,7 @@ mod tests {
 
     #[test]
     fn defaults_are_used_when_no_extra_args() {
-        let args = nmap_args("scanme.nmap.org", &[22, 80], &[]);
+        let args = nmap_args("scanme.nmap.org", &[22, 80], &[], false);
         assert_eq!(
             args,
             vec!["-sV", "-sC", "-p", "22,80", "scanme.nmap.org"]
@@ -74,7 +85,7 @@ mod tests {
     #[test]
     fn extra_args_replace_defaults_but_ports_and_host_are_appended() {
         let extra = split_extra_args("-A -T4");
-        let args = nmap_args("10.0.0.1", &[443], &extra);
+        let args = nmap_args("10.0.0.1", &[443], &extra, false);
         assert_eq!(
             args,
             vec!["-A", "-T4", "-p", "443", "10.0.0.1"]
@@ -86,10 +97,22 @@ mod tests {
 
     #[test]
     fn ports_are_joined_in_order() {
-        let args = nmap_args("host", &[80, 22, 8080], &[]);
+        let args = nmap_args("host", &[80, 22, 8080], &[], false);
         // The port list is the entry right after "-p".
         let idx = args.iter().position(|a| a == "-p").unwrap();
         assert_eq!(args[idx + 1], "80,22,8080");
+    }
+
+    #[test]
+    fn udp_defaults_scan_udp_and_detect_versions() {
+        let args = nmap_args("10.0.0.1", &[53, 123], &[], true);
+        assert_eq!(
+            args,
+            vec!["-sU", "-sV", "-p", "53,123", "10.0.0.1"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

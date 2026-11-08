@@ -43,6 +43,39 @@ struct Finding {
     banner: Option<String>,
 }
 
+/// A lower bound, in seconds, on how long a port scan will take.
+///
+/// `--delay` paces probes *per host*, so one host's probes span at least
+/// `delay × ports` regardless of concurrency; `--rate` is a single global cap,
+/// so `jobs ÷ rate` is the other bound. The scan cannot finish faster than
+/// either, so the estimate is their maximum. This deliberately ignores
+/// connection timeouts and retries: it is a "this will take at least this long"
+/// warning, not a prediction.
+fn minimum_scan_seconds(
+    delay_ms: u64,
+    ports_per_host: usize,
+    jobs: u64,
+    rate_pps: u32,
+    concurrency: usize,
+) -> u128 {
+    let per_host = u128::from(delay_ms) * ports_per_host as u128 / 1000;
+    // The pool can interleave hosts, so the delay's total thread-time is
+    // delay × jobs; with C workers the scan cannot finish faster than that
+    // divided by C. A single host still needs delay × ports, hence the floor.
+    let parallel = if concurrency > 0 {
+        u128::from(delay_ms) * u128::from(jobs) / concurrency as u128 / 1000
+    } else {
+        0
+    };
+    let delay_bound = per_host.max(parallel);
+    let rate_bound = if rate_pps > 0 {
+        u128::from(jobs) / u128::from(rate_pps)
+    } else {
+        0
+    };
+    delay_bound.max(rate_bound)
+}
+
 /// Mark every address as up without probing, for `-Pn` (skip discovery). The
 /// latency is zero since no probe was sent.
 fn all_up(addrs: Vec<IpAddr>) -> Vec<address::HostHit> {
@@ -81,7 +114,12 @@ fn build_exclude_set(specs: &[String], file: Option<&Path>) -> Result<ExcludeSet
 ///
 /// A missing nmap binary is reported once with an install hint rather than
 /// failing per host; any other spawn error is surfaced per host.
-fn run_nmap_handoff(resolved: &[(String, String)], opened: &[(usize, Finding)], extra: &[String]) {
+fn run_nmap_handoff(
+    resolved: &[(String, String)],
+    opened: &[(usize, Finding)],
+    extra: &[String],
+    udp: bool,
+) {
     use std::io::ErrorKind;
 
     // `opened` is already sorted by (host index, port), so consecutive runs of
@@ -101,7 +139,7 @@ fn run_nmap_handoff(resolved: &[(String, String)], opened: &[(usize, Finding)], 
             "Handing off to".bright_blue(),
             host.bright_green()
         );
-        match nmap::run_nmap(host, &ports, extra) {
+        match nmap::run_nmap(host, &ports, extra, udp) {
             Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 eprintln!(
@@ -362,26 +400,30 @@ fn scan_one(
                     return Some(finding);
                 }
             }
-            syn::ProbeMode::Syn => match syn::syn_scan_port(v4, port, connect_timeout) {
-                Some(syn::ProbeOutcome::Open) => {
-                    let (service, banner) = if detect_service {
-                        service::detect(&ip, port, connect_timeout)
-                    } else {
-                        (None, None)
-                    };
-                    return Some(Finding {
-                        port,
-                        latency: Duration::ZERO,
-                        status: "open",
-                        scan: "syn",
-                        service,
-                        banner,
-                    });
+            syn::ProbeMode::Syn => {
+                let syn_started = Instant::now();
+                match syn::syn_scan_port(v4, port, connect_timeout) {
+                    Some(syn::ProbeOutcome::Open) => {
+                        let latency = syn_started.elapsed();
+                        let (service, banner) = if detect_service {
+                            service::detect(&ip, port, connect_timeout)
+                        } else {
+                            (None, None)
+                        };
+                        return Some(Finding {
+                            port,
+                            latency,
+                            status: "open",
+                            scan: "syn",
+                            service,
+                            banner,
+                        });
+                    }
+                    Some(syn::ProbeOutcome::Closed) => return None,
+                    // Filtered, or raw socket unusable: fall back to a connect probe.
+                    Some(syn::ProbeOutcome::Filtered | syn::ProbeOutcome::Unfiltered) | None => {}
                 }
-                Some(syn::ProbeOutcome::Closed) => return None,
-                // Filtered, or raw socket unusable: fall back to a connect probe.
-                Some(syn::ProbeOutcome::Filtered | syn::ProbeOutcome::Unfiltered) | None => {}
-            },
+            }
         }
     }
 
@@ -657,6 +699,22 @@ fn main() {
             let timeout = Some(connect_timeout);
             let proto = if udp { "udp" } else { "tcp" };
 
+            // `--nmap-args` implies `--nmap`, and nmap writes to stdout, which
+            // would corrupt a JSON/JSONL/CSV/grep stream. Reject that pairing
+            // before any probing, unless the machine output goes to a file.
+            let nmap = nmap || nmap_args.is_some();
+            if nmap && format != OutputFormat::Text && output_file.is_none() {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "--nmap streams nmap's report to stdout and cannot be combined with -o {}; use text output or --output-file",
+                        format!("{:?}", format).to_lowercase()
+                    )
+                    .red()
+                );
+                std::process::exit(2);
+            }
+
             // A fixed source port only applies to raw TCP probes. In a connect or
             // UDP scan it has no effect, so say so rather than silently ignore it.
             if let Some(port) = source_port {
@@ -806,21 +864,23 @@ fn main() {
                 return;
             }
 
-            // Warn when the effective scan duration becomes unreasonable: with a
-            // per-probe delay, every (host, port) job waits out at least that
-            // interval, so the lower bound on wall-clock time is roughly
-            // delay × jobs / concurrency. A large sweep with a generous delay can
-            // take hours — say so before it starts rather than after.
+            // Warn when the effective scan duration becomes unreasonable. The
+            // delay is per host, so one host's probes span at least
+            // delay × ports; a global --rate adds a jobs ÷ rate bound. A large
+            // sweep with a generous delay can take hours — say so before it
+            // starts rather than after.
             if let Some(delay_ms) = requested_delay_ms.filter(|d| *d > 0 && !resolved.is_empty()) {
                 let jobs = resolved.len() as u64 * ports.len() as u64;
-                let min_secs = (delay_ms as u128 * jobs as u128 / scan_concurrency as u128) / 1000;
+                let min_secs =
+                    minimum_scan_seconds(delay_ms, ports.len(), jobs, pps, scan_concurrency);
                 if min_secs > 3600 {
                     eprintln!(
                         "{}",
                         format!(
-                            "with --delay {} ms over {} ports × {} host(s), the scan will take at least ~{} h — consider a narrower port set or a smaller delay",
+                            "with --delay {} ms, each host's {} ports take at least ~{} h; over {} host(s) the scan will take at least ~{} h — consider a narrower port set or a smaller delay",
                             delay_ms,
                             ports.len(),
+                            u128::from(delay_ms) * ports.len() as u128 / 1000 / 3600,
                             resolved.len(),
                             min_secs / 3600
                         )
@@ -1066,7 +1126,7 @@ fn main() {
                     );
                 } else {
                     let extra = nmap_args.as_deref().map(nmap::split_extra_args);
-                    run_nmap_handoff(&resolved, &results, extra.as_deref().unwrap_or(&[]));
+                    run_nmap_handoff(&resolved, &results, extra.as_deref().unwrap_or(&[]), udp);
                 }
             }
         }
@@ -1248,5 +1308,43 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::minimum_scan_seconds;
+
+    #[test]
+    fn delay_estimate_is_per_host_not_per_job() {
+        // 1 s delay over 100 ports on one host is 100 s, independent of how
+        // many hosts run concurrently.
+        assert_eq!(minimum_scan_seconds(1000, 100, 1000, 0, 256), 100);
+        assert_eq!(minimum_scan_seconds(1000, 100, 10_000, 0, 256), 100);
+    }
+
+    #[test]
+    fn serial_runs_are_bounded_by_the_whole_job_set() {
+        // Concurrency 1 means every delayed probe waits its turn: 10 hosts ×
+        // 100 ports × 1 s = 10,000 s, not just one host's 100 s.
+        assert_eq!(minimum_scan_seconds(1000, 100, 10_000, 0, 1), 10_000);
+    }
+
+    #[test]
+    fn rate_estimate_is_global() {
+        // 1000 jobs at 10 probes/second needs at least 100 s.
+        assert_eq!(minimum_scan_seconds(0, 100, 1000, 10, 256), 100);
+    }
+
+    #[test]
+    fn estimate_takes_the_stricter_bound() {
+        // 500 ms × 100 ports = 50 s per host; 1000 jobs at 10/s = 100 s.
+        // The rate cap is the stricter bound.
+        assert_eq!(minimum_scan_seconds(500, 100, 1000, 10, 256), 100);
+    }
+
+    #[test]
+    fn no_delay_and_no_rate_is_zero() {
+        assert_eq!(minimum_scan_seconds(0, 100, 1000, 0, 256), 0);
     }
 }

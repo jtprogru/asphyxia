@@ -423,7 +423,7 @@ pub fn prepare(targets: &[IpAddr]) -> bool {
 ///
 /// Returns `Some(ArpHit)` when the host answers, `None` on timeout or when the
 /// raw path is unusable (caller should fall back to TCP). Respects the global
-/// rate limit via [`crate::rate::gate`].
+/// rate limit via [`crate::rate::gate_for`].
 pub fn arp_probe(target: Ipv4Addr, timeout: Duration) -> Option<ArpHit> {
     arp_probe_with_retries(target, timeout, 0)
 }
@@ -437,8 +437,8 @@ pub fn arp_probe_with_retries(target: Ipv4Addr, timeout: Duration, retries: u32)
     let frame = build_arp_request(iface.mac.as_bytes(), iface.ip, target);
 
     for _ in 0..=retries {
-        // Respect the global rate limit (no-op when none is installed).
-        crate::rate::gate();
+        // Respect the rate cap and this host's own --delay (no-op when unset).
+        crate::rate::gate_for(IpAddr::V4(target));
         receiver.clear(target);
         let sent_at = Instant::now();
         if !receiver.submit(frame.clone()) {
