@@ -389,6 +389,9 @@ asphyxia as -s 192.168.1.0/24 --discovery arp -o jsonl
 # ICMP ping sweep for routed IPv4 hosts (needs root/CAP_NET_RAW)
 asphyxia as -s 192.168.1.0/24 --discovery icmp
 
+# Probe a custom set of TCP ports for host discovery
+asphyxia as -s 192.168.1.0/24 --discovery-ports 445,3389,8080
+
 # Skip discovery and treat every address as up (like nmap -Pn)
 asphyxia as -s 192.168.1.0/24 --Pn -o jsonl | asphyxia ps --stdin --top-ports 100
 
@@ -404,6 +407,7 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 | `-r, --range <START> <END>` | Scan an inclusive range of IPs (start and end must share the same family) |
 | `--Pn` (`--skip-discovery`) | Skip host discovery and treat every target as up (like nmap `-Pn`) |
 | `--discovery <MODE>` | Host-discovery probe: `tcp` (default, unprivileged), `arp` (local IPv4; needs root/`CAP_NET_RAW` + libpcap) or `icmp` (IPv4 ping sweep; needs root/`CAP_NET_RAW`). Unsupported cases fall back to TCP. |
+| `--discovery-ports <PORTS>` | Comma-separated TCP ports used by host discovery (default `80,443,22,3389`); a wider set finds hosts that firewall the defaults, at a linear time cost. Also used by the TCP fallback of `arp`/`icmp`. |
 | `--show-down` | With `--discovery icmp`, also emit hosts that did not answer (`status: "down"`, `reason: "unreachable"` or `"no-response"`) instead of listing only live hosts. |
 | `--exclude <SPEC>` | Exclude hosts/CIDRs from the scan (repeatable; each value may be comma-separated) |
 | `--exclude-file <PATH>` | Exclude hosts/CIDRs listed in a file (one per line; `#` comments allowed) |
@@ -418,7 +422,7 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 
 > `--exclude-cdn` uses a small, static list of well-known CDN/WAF ranges (Cloudflare, Fastly, some Akamai) baked into the binary. It is a convenience, not an authoritative registry, and can drift as providers change allocations.
 
-> By default, host availability is inferred from TCP probes across a small spread of common ports (80, 443, 22, 3389), tried in order until one answers: a host counts as up when any probed port either accepts the connection or actively refuses it (a closed port still proves the host answered). Probing more than one port finds live hosts that firewall port 80 but answer elsewhere. Only when every probed port times out or is unreachable is the host reported as down — so a host that silently drops packets on all of them may still appear offline. This is an unprivileged, best-effort check, not an ICMP ping; use `--Pn` to skip discovery entirely and treat every target as up.
+> By default, host availability is inferred from TCP probes across a small spread of common ports (80, 443, 22, 3389), tried in order until one answers (`--discovery-ports` overrides the set): a host counts as up when any probed port either accepts the connection or actively refuses it (a closed port still proves the host answered). Probing more than one port finds live hosts that firewall port 80 but answer elsewhere. Only when every probed port times out or is unreachable is the host reported as down — so a host that silently drops packets on all of them may still appear offline. This is an unprivileged, best-effort check, not an ICMP ping; use `--Pn` to skip discovery entirely and treat every target as up.
 
 #### ARP discovery (`--discovery arp`)
 

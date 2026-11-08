@@ -213,6 +213,7 @@ fn scan_filtered(
     discovery: DiscoveryMode,
     timeout: Option<Duration>,
     retries: u32,
+    ports: &[u16],
 ) -> DiscoveryReport {
     let filtered: Vec<IpAddr> = addrs
         .into_iter()
@@ -221,11 +222,13 @@ fn scan_filtered(
     if no_discovery {
         DiscoveryReport::up_only(all_up(filtered))
     } else if discovery == DiscoveryMode::Arp {
-        DiscoveryReport::up_only(scan_hosts_arp_first(filtered, timeout, retries))
+        DiscoveryReport::up_only(scan_hosts_arp_first(filtered, timeout, retries, ports))
     } else if discovery == DiscoveryMode::Icmp {
-        scan_hosts_icmp(filtered, timeout, retries)
+        scan_hosts_icmp(filtered, timeout, retries, ports)
     } else {
-        DiscoveryReport::up_only(address::scan_hosts(filtered, timeout, retries))
+        DiscoveryReport::up_only(address::scan_hosts_with_ports(
+            filtered, timeout, retries, ports,
+        ))
     }
 }
 
@@ -241,6 +244,7 @@ fn scan_hosts_arp_first(
     addrs: Vec<IpAddr>,
     timeout: Option<Duration>,
     retries: u32,
+    ports: &[u16],
 ) -> Vec<address::HostHit> {
     use asphyxia::scanner::discovery::arp;
 
@@ -251,7 +255,7 @@ fn scan_hosts_arp_first(
             "ARP discovery is unavailable for these targets (needs a local IPv4 target with a MAC, root/CAP_NET_RAW and libpcap) — falling back to TCP"
                 .yellow()
         );
-        return address::scan_hosts(addrs, Some(timeout), retries);
+        return address::scan_hosts_with_ports(addrs, Some(timeout), retries, ports);
     }
 
     let pb = progress_bar(addrs.len() as u64, "ARP probes");
@@ -287,7 +291,12 @@ fn scan_hosts_arp_first(
     }
 
     if !tcp_fallback.is_empty() {
-        hits.extend(address::scan_hosts(tcp_fallback, Some(timeout), retries));
+        hits.extend(address::scan_hosts_with_ports(
+            tcp_fallback,
+            Some(timeout),
+            retries,
+            ports,
+        ));
     }
 
     hits.sort_by_key(|h| h.ip);
@@ -301,7 +310,12 @@ fn scan_hosts_arp_first(
 ///
 /// If the raw socket is unavailable (no root/`CAP_NET_RAW`, or only IPv6
 /// targets), the whole list falls back to TCP with one warning.
-fn scan_hosts_icmp(addrs: Vec<IpAddr>, timeout: Option<Duration>, retries: u32) -> DiscoveryReport {
+fn scan_hosts_icmp(
+    addrs: Vec<IpAddr>,
+    timeout: Option<Duration>,
+    retries: u32,
+    ports: &[u16],
+) -> DiscoveryReport {
     use asphyxia::scanner::discovery::icmp;
 
     let timeout = timeout.unwrap_or(Duration::from_millis(2000));
@@ -311,7 +325,12 @@ fn scan_hosts_icmp(addrs: Vec<IpAddr>, timeout: Option<Duration>, retries: u32) 
             "ICMP discovery is unavailable for these targets (IPv4 only; needs root/CAP_NET_RAW) — falling back to TCP"
                 .yellow()
         );
-        return DiscoveryReport::up_only(address::scan_hosts(addrs, Some(timeout), retries));
+        return DiscoveryReport::up_only(address::scan_hosts_with_ports(
+            addrs,
+            Some(timeout),
+            retries,
+            ports,
+        ));
     }
 
     let pb = progress_bar(addrs.len() as u64, "ICMP probes");
@@ -356,7 +375,12 @@ fn scan_hosts_icmp(addrs: Vec<IpAddr>, timeout: Option<Duration>, retries: u32) 
     }
 
     if !tcp_fallback.is_empty() {
-        up.extend(address::scan_hosts(tcp_fallback, Some(timeout), retries));
+        up.extend(address::scan_hosts_with_ports(
+            tcp_fallback,
+            Some(timeout),
+            retries,
+            ports,
+        ));
     }
     up.sort_by_key(|h| h.ip);
     DiscoveryReport { up, down }
@@ -1252,6 +1276,7 @@ fn main() {
             range,
             no_discovery,
             discovery: discovery_mode,
+            discovery_ports,
             show_down,
             exclude,
             exclude_file,
@@ -1259,6 +1284,34 @@ fn main() {
             ..
         } => {
             let timeout = Some(Duration::from_millis(timeout));
+
+            // Host discovery ports: the default TCP spread unless overridden.
+            let custom_discovery_ports = discovery_ports.is_some();
+            let ports: Vec<u16> = match discovery_ports {
+                Some(spec) => match parse_ports(&spec) {
+                    Ok(ports) => ports,
+                    Err(e) => {
+                        eprintln!("{}", e.red());
+                        return;
+                    }
+                },
+                None => address::PROBE_PORTS.to_vec(),
+            };
+            if ports.is_empty() || ports.contains(&0) {
+                eprintln!(
+                    "{}",
+                    "--discovery-ports must contain at least one port in 1..=65535".yellow()
+                );
+                return;
+            }
+            if custom_discovery_ports && discovery_mode != DiscoveryMode::Tcp {
+                eprintln!(
+                    "{}",
+                    "--discovery-ports applies to TCP discovery and the TCP fallback of arp/icmp — it does not change the raw probe itself"
+                        .yellow()
+                );
+            }
+            let ports = ports.as_slice();
 
             let exclude_set = match build_exclude_set(&exclude, exclude_file.as_deref()) {
                 Ok(set) => set,
@@ -1291,18 +1344,25 @@ fn main() {
                                 discovery_mode,
                                 timeout,
                                 retries,
+                                ports,
                             )
                         } else if discovery_mode == DiscoveryMode::Arp {
                             DiscoveryReport::up_only(scan_hosts_arp_first(
                                 address::subnet_addresses(network),
                                 timeout,
                                 retries,
+                                ports,
                             ))
                         } else if discovery_mode == DiscoveryMode::Icmp {
-                            scan_hosts_icmp(address::subnet_addresses(network), timeout, retries)
+                            scan_hosts_icmp(
+                                address::subnet_addresses(network),
+                                timeout,
+                                retries,
+                                ports,
+                            )
                         } else {
-                            DiscoveryReport::up_only(address::scan_subnet_with_retries(
-                                network, timeout, retries,
+                            DiscoveryReport::up_only(address::scan_subnet_with_ports(
+                                network, timeout, retries, ports,
                             ))
                         }
                     }
@@ -1329,18 +1389,20 @@ fn main() {
                                 discovery_mode,
                                 timeout,
                                 retries,
+                                ports,
                             )
                         } else if discovery_mode == DiscoveryMode::Arp {
                             DiscoveryReport::up_only(scan_hosts_arp_first(
                                 vec![ip],
                                 timeout,
                                 retries,
+                                ports,
                             ))
                         } else if discovery_mode == DiscoveryMode::Icmp {
-                            scan_hosts_icmp(vec![ip], timeout, retries)
+                            scan_hosts_icmp(vec![ip], timeout, retries, ports)
                         } else {
                             DiscoveryReport::up_only(
-                                address::scan_address_with_retries(ip, timeout, retries)
+                                address::scan_address_with_ports(ip, timeout, retries, ports)
                                     .into_iter()
                                     .collect(),
                             )
@@ -1371,18 +1433,25 @@ fn main() {
                                 discovery_mode,
                                 timeout,
                                 retries,
+                                ports,
                             )
                         } else if discovery_mode == DiscoveryMode::Arp {
                             DiscoveryReport::up_only(scan_hosts_arp_first(
                                 address::range_addresses(start, end),
                                 timeout,
                                 retries,
+                                ports,
                             ))
                         } else if discovery_mode == DiscoveryMode::Icmp {
-                            scan_hosts_icmp(address::range_addresses(start, end), timeout, retries)
+                            scan_hosts_icmp(
+                                address::range_addresses(start, end),
+                                timeout,
+                                retries,
+                                ports,
+                            )
                         } else {
-                            DiscoveryReport::up_only(address::scan_ip_range_with_retries(
-                                start, end, timeout, retries,
+                            DiscoveryReport::up_only(address::scan_ip_range_with_ports(
+                                start, end, timeout, retries, ports,
                             ))
                         }
                     }

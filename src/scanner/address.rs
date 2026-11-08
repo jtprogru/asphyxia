@@ -111,9 +111,21 @@ pub fn scan_address_with_retries(
     timeout: Option<Duration>,
     retries: u32,
 ) -> Option<HostHit> {
+    scan_address_with_ports(ip, timeout, retries, &PROBE_PORTS)
+}
+
+/// Scan a single IP for availability using an explicit discovery-port set,
+/// retrying up to `retries` extra times on silence. This backs
+/// `--discovery-ports`; [`scan_address_with_retries`] is the default-set wrapper.
+pub fn scan_address_with_ports(
+    ip: IpAddr,
+    timeout: Option<Duration>,
+    retries: u32,
+    ports: &[u16],
+) -> Option<HostHit> {
     let timeout = timeout.unwrap_or(crate::scanner::port::CONNECT_TIMEOUT);
     for _ in 0..=retries {
-        if let Some(hit) = probe_address(ip, timeout) {
+        if let Some(hit) = probe_address(ip, timeout, ports) {
             return Some(hit);
         }
     }
@@ -123,10 +135,8 @@ pub fn scan_address_with_retries(
 /// Probe a host across [`PROBE_PORTS`] in order, returning `Some` as soon as any
 /// port answers (open, or refused/reset). Returns `None` only when *every* port
 /// is silent (timeout/unreachable) — the outcome worth retrying.
-fn probe_address(ip: IpAddr, timeout: Duration) -> Option<HostHit> {
-    PROBE_PORTS
-        .iter()
-        .find_map(|&port| probe_port(ip, port, timeout))
+fn probe_address(ip: IpAddr, timeout: Duration, ports: &[u16]) -> Option<HostHit> {
+    ports.iter().find_map(|&port| probe_port(ip, port, timeout))
 }
 
 /// Make a single availability probe against one port. Returns `Some` when the
@@ -174,12 +184,23 @@ fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> Option<HostHit> {
 /// than enumerating a whole subnet or range. Each probe is retried up to
 /// `retries` extra times on silence (see [`scan_address_with_retries`]).
 pub fn scan_hosts(addrs: Vec<IpAddr>, timeout: Option<Duration>, retries: u32) -> Vec<HostHit> {
+    scan_hosts_with_ports(addrs, timeout, retries, &PROBE_PORTS)
+}
+
+/// [`scan_hosts`] with an explicit discovery-port set (`--discovery-ports`).
+pub fn scan_hosts_with_ports(
+    addrs: Vec<IpAddr>,
+    timeout: Option<Duration>,
+    retries: u32,
+    ports: &[u16],
+) -> Vec<HostHit> {
     let total = addrs.len() as u64;
     scan_all(
         addrs.into_par_iter(),
         total,
         timeout,
         retries,
+        ports,
         "Scan completed",
     )
 }
@@ -196,6 +217,7 @@ fn scan_all<I>(
     total: u64,
     timeout: Option<Duration>,
     retries: u32,
+    ports: &[u16],
     finish_msg: &str,
 ) -> Vec<HostHit>
 where
@@ -205,7 +227,7 @@ where
 
     let mut result: Vec<HostHit> = addrs
         .filter_map(|ip| {
-            let available = scan_address_with_retries(ip, timeout, retries);
+            let available = scan_address_with_ports(ip, timeout, retries, ports);
             pb.inc(1);
             available
         })
@@ -254,6 +276,16 @@ pub fn scan_subnet_with_retries(
     timeout: Option<Duration>,
     retries: u32,
 ) -> Vec<HostHit> {
+    scan_subnet_with_ports(subnet, timeout, retries, &PROBE_PORTS)
+}
+
+/// [`scan_subnet_with_retries`] with an explicit discovery-port set.
+pub fn scan_subnet_with_ports(
+    subnet: IpNetwork,
+    timeout: Option<Duration>,
+    retries: u32,
+    ports: &[u16],
+) -> Vec<HostHit> {
     match (subnet.network(), subnet.broadcast()) {
         (IpAddr::V4(network), IpAddr::V4(broadcast)) => {
             let start = u32::from(network);
@@ -264,6 +296,7 @@ pub fn scan_subnet_with_retries(
                 total,
                 timeout,
                 retries,
+                ports,
                 "Subnet scan completed",
             )
         }
@@ -275,6 +308,7 @@ pub fn scan_subnet_with_retries(
                     total,
                     timeout,
                     retries,
+                    ports,
                     "Subnet scan completed",
                 )
             }
@@ -326,6 +360,17 @@ pub fn scan_ip_range_with_retries(
     timeout: Option<Duration>,
     retries: u32,
 ) -> Vec<HostHit> {
+    scan_ip_range_with_ports(start, end, timeout, retries, &PROBE_PORTS)
+}
+
+/// [`scan_ip_range_with_retries`] with an explicit discovery-port set.
+pub fn scan_ip_range_with_ports(
+    start: IpAddr,
+    end: IpAddr,
+    timeout: Option<Duration>,
+    retries: u32,
+    ports: &[u16],
+) -> Vec<HostHit> {
     match (start, end) {
         (IpAddr::V4(start), IpAddr::V4(end)) => {
             let start = u32::from(start);
@@ -339,6 +384,7 @@ pub fn scan_ip_range_with_retries(
                 total,
                 timeout,
                 retries,
+                ports,
                 "Range scan completed",
             )
         }
@@ -354,6 +400,7 @@ pub fn scan_ip_range_with_retries(
                         total,
                         timeout,
                         retries,
+                        ports,
                         "Range scan completed",
                     )
                 }
@@ -551,6 +598,18 @@ mod tests {
         let hit = probe_port(ip, port, Duration::from_millis(200));
         assert!(hit.is_some(), "an open port should mark the host up");
         assert_eq!(hit.unwrap().ip, ip);
+    }
+
+    #[test]
+    fn custom_discovery_ports_are_probed() {
+        // Bind a listener on an ephemeral port and pass exactly that port; the
+        // custom path must report the host up.
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().unwrap().port();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let hit = scan_address_with_ports(ip, TEST_TIMEOUT, 0, &[port]);
+        assert!(hit.is_some(), "the custom discovery port should answer");
     }
 
     #[test]

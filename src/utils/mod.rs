@@ -193,6 +193,7 @@ fn extract_ips(json: &str, out: &mut Vec<String>) {
 pub fn parse_ports(s: &str) -> Result<Vec<u16>, String> {
     s.split(',')
         .map(|p| {
+            let p = p.trim();
             p.parse::<u16>()
                 .map_err(|_| format!("Invalid port number: {}", p))
         })
@@ -258,6 +259,11 @@ mod tests {
 
     fn targets(input: &str) -> Vec<String> {
         read_targets(Cursor::new(input))
+    }
+
+    #[test]
+    fn parse_ports_trims_whitespace() {
+        assert_eq!(parse_ports(" 80, 443 ,22 "), Ok(vec![80, 443, 22]));
     }
 
     #[test]

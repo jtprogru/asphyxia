@@ -1635,6 +1635,41 @@ fn discovery_arp_on_non_local_target_falls_back_to_tcp() {
 }
 
 #[test]
+fn discovery_ports_are_accepted_and_documented() {
+    asphyxia()
+        .args([
+            "as",
+            "-t",
+            "127.0.0.1",
+            "--discovery-ports",
+            "445,3389",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .success();
+    asphyxia()
+        .args(["as", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--discovery-ports"));
+}
+
+#[test]
+fn discovery_ports_reject_invalid_and_zero_ports() {
+    asphyxia()
+        .args(["as", "-t", "127.0.0.1", "--discovery-ports", "nope"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Invalid port number: nope"));
+    asphyxia()
+        .args(["as", "-t", "127.0.0.1", "--discovery-ports", "0"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("1..=65535"));
+}
+
+#[test]
 fn discovery_flag_rejects_unknown_mode() {
     asphyxia()
         .args(["as", "-t", "127.0.0.1", "--discovery", "bogus"])

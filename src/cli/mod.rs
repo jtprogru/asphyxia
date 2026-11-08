@@ -191,6 +191,9 @@ Examples:
   # Ping sweep with ICMP echo (IPv4; needs root/CAP_NET_RAW)
   asphyxia as -s 192.168.1.0/24 --discovery icmp
 
+  # Probe a custom set of TCP ports for host discovery
+  asphyxia as -s 192.168.1.0/24 --discovery-ports 445,3389,8080
+
   # Skip host discovery and treat every address as up (like nmap -Pn)
   asphyxia as -s 192.168.1.0/24 --Pn
 
@@ -254,6 +257,7 @@ Required arguments:
                                  needs root/CAP_NET_RAW + libpcap) or icmp (IPv4 ping
                                  sweep, needs root/CAP_NET_RAW); else falls back to tcp
     --Pn                         Skip host discovery; treat every target as up
+    --discovery-ports <PORTS>    Comma-separated TCP ports for host discovery (default 80,443,22,3389)
     --show-down                  Include ICMP non-responders as status "down" with a reason
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
     -e, --interface <NAME>       Bind every probe to this interface (e.g. en0), like `ssh -B`
@@ -437,6 +441,10 @@ pub enum Args {
             default_value_t = DiscoveryMode::Tcp
         )]
         discovery: DiscoveryMode,
+
+        /// Comma-separated TCP ports used for host discovery (default: 80,443,22,3389)
+        #[arg(long = "discovery-ports", value_name = "PORTS")]
+        discovery_ports: Option<String>,
 
         /// Include hosts that did not answer in structured output (status "down",
         /// reason "unreachable" or "no-response"). ICMP discovery only.
