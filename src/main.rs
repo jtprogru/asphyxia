@@ -21,6 +21,8 @@ use asphyxia::utils::{
     read_targets_from_stdin,
 };
 
+mod commands;
+
 /// One reportable port result, normalized across TCP, UDP and the raw scan
 /// modes so the output path does not care which probe produced it.
 struct Finding {
@@ -158,196 +160,6 @@ fn down_record(down: &DownHit) -> ScanRecord {
         asn_org: None,
         cloud: None,
     }
-}
-
-/// Parse a `--watch` interval: a plain number is seconds; `ms`, `s`, `m`, `h`
-/// suffixes are accepted.
-fn parse_watch_interval(spec: &str) -> Result<Duration, String> {
-    let spec = spec.trim();
-    let (number, multiplier) = if let Some(number) = spec.strip_suffix("ms") {
-        (number, 1u64)
-    } else if let Some(number) = spec.strip_suffix('s') {
-        (number, 1_000)
-    } else if let Some(number) = spec.strip_suffix('m') {
-        (number, 60_000)
-    } else if let Some(number) = spec.strip_suffix('h') {
-        (number, 3_600_000)
-    } else {
-        (spec, 1_000)
-    };
-    let value: u64 = number
-        .trim()
-        .parse()
-        .map_err(|_| format!("Invalid --watch interval '{spec}' (use e.g. 30s or 5m)"))?;
-    if value == 0 {
-        return Err("--watch interval must be greater than zero".to_string());
-    }
-    let millis = value
-        .checked_mul(multiplier)
-        .ok_or_else(|| "--watch interval is too large".to_string())?;
-    Ok(Duration::from_millis(millis))
-}
-
-/// Build the child invocation for one watch pass: the original `ps` arguments
-/// with the watch/output flags removed, plus JSONL output to `temp`.
-fn watch_child_args(temp: &Path) -> Result<Vec<std::ffi::OsString>, String> {
-    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let mut args = Vec::new();
-    let mut index = 0;
-    while index < raw.len() {
-        let text = raw[index].to_string_lossy();
-        if matches!(
-            text.as_ref(),
-            "--watch"
-                | "--watch-count"
-                | "-o"
-                | "--output"
-                | "--output-file"
-                | "--oF"
-                | "--report"
-                | "--report-file"
-        ) {
-            index += 2;
-            continue;
-        }
-        if text.starts_with("--watch=")
-            || text.starts_with("--watch-count=")
-            || text.starts_with("--output=")
-            || text.starts_with("--output-file=")
-            || text.starts_with("--report=")
-            || text.starts_with("--report-file=")
-            || text == "--full-banners"
-            || (text.starts_with("-o") && text.len() > 2)
-        {
-            index += 1;
-            continue;
-        }
-        if text == "--nmap"
-            || text.starts_with("--nmap=")
-            || text == "--nmap-args"
-            || text.starts_with("--nmap-args=")
-        {
-            return Err("--watch cannot be combined with --nmap".to_string());
-        }
-        if text == "--stdin" {
-            return Err("--watch cannot be combined with --stdin".to_string());
-        }
-        if text == "--resume" || text.starts_with("--resume=") {
-            return Err("--watch cannot be combined with --resume".to_string());
-        }
-        args.push(raw[index].clone());
-        index += 1;
-    }
-    args.push("-o".into());
-    args.push("jsonl".into());
-    args.push("--output-file".into());
-    args.push(temp.as_os_str().to_os_string());
-    Ok(args)
-}
-
-/// Run a scan repeatedly and emit JSON Lines changes between passes. The first
-/// pass is a baseline; each later pass is diffed against exactly the previous
-/// one, so memory holds at most two result sets.
-fn run_watch(spec: &str, count: Option<usize>) -> Result<(), String> {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    let interval = parse_watch_interval(spec)?;
-    if count == Some(0) {
-        return Err("--watch-count must be at least 1".to_string());
-    }
-    let executable = std::env::current_exe()
-        .map_err(|e| format!("Could not locate the asphyxia binary: {e}"))?;
-
-    static STOP: AtomicBool = AtomicBool::new(false);
-    let _ = ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst));
-
-    let mut previous: Option<Vec<asphyxia::diff::Record>> = None;
-    let mut pass = 0usize;
-    loop {
-        pass += 1;
-        let temp = std::env::temp_dir().join(format!(
-            "asphyxia-watch-{}-{pass}.jsonl",
-            std::process::id()
-        ));
-        let child_args = watch_child_args(&temp)?;
-
-        let status = std::process::Command::new(&executable)
-            .args(&child_args)
-            .status()
-            .map_err(|e| format!("Could not start watch pass: {e}"))?;
-
-        if !status.success() {
-            let _ = std::fs::remove_file(&temp);
-            if status.code() == Some(130) {
-                // The child was interrupted alongside us; stop cleanly.
-                break;
-            }
-            return Err(format!("watch pass {pass} failed ({status})"));
-        }
-
-        let current = match asphyxia::diff::load(&temp) {
-            Ok(records) => records,
-            Err(e) => {
-                let _ = std::fs::remove_file(&temp);
-                return Err(e);
-            }
-        };
-        let _ = std::fs::remove_file(&temp);
-
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
-
-        if let Some(previous) = previous.take() {
-            let report = asphyxia::diff::compare(previous, current.clone());
-            let events = asphyxia::diff::events(&report);
-            if report.is_empty() {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "no_changes",
-                        "timestamp": timestamp,
-                        "pass": pass
-                    })
-                );
-            }
-            for event in events {
-                let mut event = event;
-                if let Some(object) = event.as_object_mut() {
-                    object.insert("timestamp".into(), serde_json::json!(timestamp));
-                    object.insert("pass".into(), serde_json::json!(pass));
-                }
-                println!("{event}");
-            }
-        } else {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "event": "baseline",
-                    "timestamp": timestamp,
-                    "pass": pass,
-                    "records": current.len()
-                })
-            );
-        }
-        previous = Some(current);
-
-        if count.is_some_and(|count| pass >= count) || STOP.load(Ordering::SeqCst) {
-            break;
-        }
-
-        // Sleep in short slices so Ctrl-C is handled promptly.
-        let deadline = std::time::Instant::now() + interval;
-        while std::time::Instant::now() < deadline {
-            if STOP.load(Ordering::SeqCst) {
-                break;
-            }
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            std::thread::sleep(remaining.min(Duration::from_millis(100)));
-        }
-    }
-    Ok(())
 }
 
 /// Mark every address as up without probing, for `-Pn` (skip discovery). The
@@ -1330,7 +1142,7 @@ fn main() {
             ..
         } => {
             if let Some(spec) = watch {
-                match run_watch(&spec, watch_count) {
+                match commands::watch::run_watch(&spec, watch_count) {
                     Ok(()) => return,
                     Err(e) => {
                         eprintln!("{}", e.red());
@@ -2204,57 +2016,9 @@ fn main() {
             output,
             output_file,
         } => {
-            if !matches!(
-                output,
-                OutputFormat::Text | OutputFormat::Json | OutputFormat::Jsonl
-            ) {
-                eprintln!("{}", "diff supports -o text, -o json, or -o jsonl".red());
+            if let Err(e) = commands::diff::run(&old, &new, output, output_file.as_deref()) {
+                eprintln!("{}", e.red());
                 std::process::exit(2);
-            }
-
-            let old_records = match asphyxia::diff::load(&old) {
-                Ok(records) => records,
-                Err(e) => {
-                    eprintln!("{}", e.red());
-                    std::process::exit(2);
-                }
-            };
-            let new_records = match asphyxia::diff::load(&new) {
-                Ok(records) => records,
-                Err(e) => {
-                    eprintln!("{}", e.red());
-                    std::process::exit(2);
-                }
-            };
-            let report = asphyxia::diff::compare(old_records, new_records);
-
-            // Keep scope warnings visible even when the payload goes to a file.
-            if output != OutputFormat::Text {
-                for warning in &report.warnings {
-                    eprintln!("{}", format!("warning: {warning}").yellow());
-                }
-            }
-
-            let rendered = match output {
-                OutputFormat::Text => asphyxia::diff::render_text(&report),
-                OutputFormat::Json => {
-                    format!("{}\n", serde_json::to_string_pretty(&report).unwrap())
-                }
-                OutputFormat::Jsonl => asphyxia::diff::render_jsonl(&report),
-                OutputFormat::Csv | OutputFormat::Grep => unreachable!("validated above"),
-            };
-
-            match output_file {
-                Some(path) => {
-                    if let Err(e) = std::fs::write(&path, rendered) {
-                        eprintln!(
-                            "{}",
-                            format!("Failed to write {}: {e}", path.display()).red()
-                        );
-                        std::process::exit(2);
-                    }
-                }
-                None => print!("{rendered}"),
             }
         }
         Args::Trace {
@@ -2268,71 +2032,18 @@ fn main() {
             output_file,
             ..
         } => {
-            if !matches!(
-                output,
-                OutputFormat::Text | OutputFormat::Json | OutputFormat::Jsonl
-            ) {
-                eprintln!("{}", "trace supports -o text, -o json, or -o jsonl".red());
-                std::process::exit(2);
-            }
-            if transport == asphyxia::traceroute::Transport::Tcp && port == 0 {
-                eprintln!("{}", "--port must be 1..=65535".red());
-                std::process::exit(2);
-            }
-            if timeout == 0 {
-                eprintln!("{}", "--timeout must be greater than zero".red());
-                std::process::exit(2);
-            }
-
-            let ip = match target.parse::<IpAddr>() {
-                Ok(ip) => ip,
-                Err(_) => match port::resolve_host(&target) {
-                    Some(ip) => ip,
-                    None => {
-                        eprintln!("{}", format!("Could not resolve target: {target}").red());
-                        std::process::exit(2);
-                    }
-                },
-            };
-            let IpAddr::V4(target) = ip else {
-                eprintln!("{}", "traceroute is IPv4-only".red());
-                std::process::exit(2);
-            };
-
-            let report = match asphyxia::traceroute::trace(
-                target,
+            if let Err(e) = commands::trace::run(
+                &target,
                 transport,
                 port,
                 max_hops,
                 probes,
-                Duration::from_millis(timeout),
+                timeout,
+                output,
+                output_file.as_deref(),
             ) {
-                Ok(report) => report,
-                Err(e) => {
-                    eprintln!("{}", e.red());
-                    std::process::exit(2);
-                }
-            };
-
-            let rendered = match output {
-                OutputFormat::Text => asphyxia::traceroute::render_text(&report),
-                OutputFormat::Json => {
-                    format!("{}\n", serde_json::to_string_pretty(&report).unwrap())
-                }
-                OutputFormat::Jsonl => asphyxia::traceroute::render_jsonl(&report),
-                OutputFormat::Csv | OutputFormat::Grep => unreachable!("validated above"),
-            };
-            match output_file {
-                Some(path) => {
-                    if let Err(e) = std::fs::write(&path, rendered) {
-                        eprintln!(
-                            "{}",
-                            format!("Failed to write {}: {e}", path.display()).red()
-                        );
-                        std::process::exit(2);
-                    }
-                }
-                None => print!("{rendered}"),
+                eprintln!("{}", e.red());
+                std::process::exit(2);
             }
         }
     }
