@@ -5,7 +5,7 @@
 ## Фаза 1 — Расширение семейства сканирований
 
 - [x] [01](01-ack-scan.md) — ACK-скан (состояние фаервола: `unfiltered`/`filtered`)
-- [x] [02](02-fin-null-xmas-scans.md) — сканы FIN / NULL / XMAS (ICMP `filtered` — Unreleased)
+- [x] [02](02-fin-null-xmas-scans.md) — сканы FIN / NULL / XMAS (ICMP `filtered` — 0.11.1)
 - [x] [03](03-udp-service-probes.md) — UDP-пробирование сервисов (DNS/SNMP/NTP, ICMP unreachable)
 - [x] [04](04-source-port.md) — настраиваемый source-порт
 - [x] [05](05-delay-jitter.md) — задержка и джиттер на хост

@@ -4,7 +4,7 @@ All notable changes to Asphyxia are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.11.1] - 2026-11-08
 
 ### Added
 
@@ -16,6 +16,8 @@ All notable changes to Asphyxia are documented here. The format follows
 - `--top-ports` is now generated from the real `nmap-services` TCP frequency
   order instead of a hand-padded table; the first 1000 ports are the actual
   nmap top-1000 set.
+- Internal: `main.rs` was split into `src/commands/{port,address,diff,trace,watch}.rs`;
+  behaviour, output and exit codes are unchanged.
 
 ## [0.11.0] - 2026-11-08
 
@@ -82,4 +84,5 @@ TCP, asset identity, temporal comparison, topology and reporting.
 - Root smoke tests confirmed ARP, ICMP and combined discovery on a live
   `192.168.55.0/24` network.
 
+[0.11.1]: https://github.com/jtprogru/asphyxia/releases/tag/0.11.1
 [0.11.0]: https://github.com/jtprogru/asphyxia/releases/tag/0.11.0

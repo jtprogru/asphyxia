@@ -901,9 +901,9 @@ sudo env "PATH=$PATH" ASPHYXIA_ARP_TARGET=192.168.1.1 \
 ## Changelog
 
 Release notes live in [CHANGELOG.md](CHANGELOG.md). The current release is
-**0.11.0**, which completes the reconnaissance roadmap (ARP/ICMP/combined
-discovery, PTR/classification/ASN enrichment, diff/watch, traceroute and
-Markdown/HTML reports).
+**0.11.1**, a patch on top of the reconnaissance-roadmap 0.11.0 (ICMP
+`filtered` for FIN/NULL/XMAS, a corrected `--top-ports` table and internal
+command-module refactoring).
 
 ## License
 
