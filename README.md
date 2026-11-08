@@ -886,6 +886,13 @@ cargo test               # run unit and doc tests
 
 CI runs formatting, Clippy (warnings denied), build, and tests on every pull request and push to `main`.
 
+## Changelog
+
+Release notes live in [CHANGELOG.md](CHANGELOG.md). The current release is
+**0.11.0**, which completes the reconnaissance roadmap (ARP/ICMP/combined
+discovery, PTR/classification/ASN enrichment, diff/watch, traceroute and
+Markdown/HTML reports).
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).

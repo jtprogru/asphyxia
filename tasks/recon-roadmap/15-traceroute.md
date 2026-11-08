@@ -1,7 +1,7 @@
 # TCP/ICMP traceroute
 
 Фаза: 5 — Топология и отчётность
-Статус: Выполнено (ветка feat/recon-roadmap, 2026-11-08; IPv4, нужен root/CAP_NET_RAW)
+Статус: Выполнено (выпущено в 0.11.0, 2026-11-08; IPv4, нужен root/CAP_NET_RAW)
 Зависит от: — (переиспользует платформу raw-пакетов из `src/scanner/syn.rs`)
 Роадмап: docs/recon-roadmap.md (Фаза 5)
 
