@@ -66,6 +66,7 @@ cargo test --locked
 - Unit tests live alongside the code they cover; end-to-end CLI tests live in `tests/cli.rs` and use `assert_cmd` / `predicates`.
 - CLI tests must not depend on a real `~/.asphyxia.toml` or on reaching external hosts — keep them hermetic.
 - Run the full suite with `cargo test --locked` (or `make test`) before opening a PR.
+- Raw-packet paths (ARP, ICMP, traceroute) have opt-in privileged tests in `tests/root.rs`. They are ignored by default; run them with root/`CAP_NET_RAW` and `--ignored` when touching those paths. ARP/combined tests also need `ASPHYXIA_ARP_TARGET` set to an on-link IPv4 address.
 
 ## Commit messages
 

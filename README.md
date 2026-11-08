@@ -884,7 +884,18 @@ cargo clippy --all-targets -- -D warnings   # lint
 cargo test               # run unit and doc tests
 ```
 
-CI runs formatting, Clippy (warnings denied), build, and tests on every pull request and push to `main`.
+CI runs formatting, Clippy (warnings denied), build, and tests on every pull request and push to `main`; it also runs a macOS job and an MSRV 1.88 job.
+
+The raw ARP/ICMP/traceroute paths have opt-in root tests:
+
+```bash
+# ICMP discovery + ICMP traceroute on loopback
+sudo env "PATH=$PATH" cargo test --test root -- --ignored --nocapture
+
+# ARP/combined discovery against a real on-link target
+sudo env "PATH=$PATH" ASPHYXIA_ARP_TARGET=192.168.1.1 \
+  cargo test --test root -- --ignored --nocapture
+```
 
 ## Changelog
 
