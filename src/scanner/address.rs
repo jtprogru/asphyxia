@@ -25,6 +25,11 @@ pub struct HostHit {
     pub mac: Option<String>,
     /// The vendor OUI (first three MAC octets, `aa-bb-cc`) when `mac` is known.
     pub oui: Option<String>,
+    /// Reverse-DNS PTR name, when `--resolve-ptr` found one.
+    pub ptr: Option<String>,
+    /// Whether the PTR name forward-resolves to `ip`; `None` when no PTR exists
+    /// or the lookup timed out.
+    pub ptr_confirmed: Option<bool>,
 }
 
 /// TCP ports used to probe a host when checking availability, tried in order
@@ -155,6 +160,8 @@ fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> Option<HostHit> {
             discovery: "tcp",
             mac: None,
             oui: None,
+            ptr: None,
+            ptr_confirmed: None,
         }),
         // The host replied with a reset — it is up, the port is just closed.
         Err(e)
@@ -169,6 +176,8 @@ fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> Option<HostHit> {
                 discovery: "tcp",
                 mac: None,
                 oui: None,
+                ptr: None,
+                ptr_confirmed: None,
             })
         }
         // Timeout, unreachable, or anything else: no answer.

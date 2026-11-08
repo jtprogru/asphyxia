@@ -25,6 +25,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **ARP host discovery** — `as --discovery arp` finds hosts on a locally-connected IPv4 subnet by ARP, including hosts that silently drop every TCP probe; it reports the MAC address and vendor OUI and falls back to TCP for remote or IPv6 targets.
 - **ICMP ping sweep** — `as --discovery icmp` sends ICMP echo requests to routed IPv4 hosts and reports those that answer, without needing libpcap.
 - **Combined discovery** — `--discovery arp,icmp,tcp` tries several probes per host (or `auto` for ARP → ICMP → TCP), names the probe that confirmed each host, and degrades unavailable probes to warnings instead of failing the scan.
+- **Reverse DNS / PTR** — `as --resolve-ptr` adds a PTR name and a separate forward-confirmed verdict for each live host, with a bounded lookup that never fails the base scan.
 - **Chainable scans** — pipe the hosts an address scan discovers straight into a port scan with `--stdin`, turning host discovery and port scanning into a single pipeline.
 - **IPv4 and IPv6** — connect and UDP scans accept both address families; raw TCP and ARP modes are IPv4-only and fall back visibly for IPv6.
 - **Configurable timeout** — tune the per-connection timeout with `--timeout`.
@@ -397,6 +398,9 @@ asphyxia as -s 192.168.1.0/24 --discovery-ports 445,3389,8080
 asphyxia as -s 192.168.1.0/24 --discovery arp,icmp,tcp
 asphyxia as -s 10.0.0.0/24 --discovery auto
 
+# Enrich live hosts with reverse DNS and a forward-confirmed PTR
+asphyxia as -s 192.168.1.0/24 --resolve-ptr -o jsonl
+
 # Skip discovery and treat every address as up (like nmap -Pn)
 asphyxia as -s 192.168.1.0/24 --Pn -o jsonl | asphyxia ps --stdin --top-ports 100
 
@@ -414,6 +418,7 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 | `--discovery <MODES>` | Host-discovery probe(s): `tcp` (default, unprivileged), `arp` (local IPv4; needs root/`CAP_NET_RAW` + libpcap), `icmp` (IPv4 ping sweep; needs root/`CAP_NET_RAW`), a comma-separated combination such as `arp,icmp,tcp`, or `auto` (ARP → ICMP → TCP). Probes that cannot run are skipped with a warning; the first probe that answers confirms the host. |
 | `--discovery-ports <PORTS>` | Comma-separated TCP ports used by host discovery (default `80,443,22,3389`); a wider set finds hosts that firewall the defaults, at a linear time cost. Also used by the TCP fallback of `arp`/`icmp`. |
 | `--show-down` | With `--discovery icmp`, also emit hosts that did not answer (`status: "down"`, `reason: "unreachable"` or `"no-response"`) instead of listing only live hosts. |
+| `--resolve-ptr` | Enrich live hosts with a reverse-DNS PTR name and a separate forward-confirmed verdict (`ptr`, `ptr_confirmed`). Lookups are optional and bounded by the per-host timeout. |
 | `--exclude <SPEC>` | Exclude hosts/CIDRs from the scan (repeatable; each value may be comma-separated) |
 | `--exclude-file <PATH>` | Exclude hosts/CIDRs listed in a file (one per line; `#` comments allowed) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
@@ -491,9 +496,23 @@ asphyxia as -s 10.0.0.0/24 --discovery auto
 - **Shared budget** — every probe in the plan passes through the same `--rate`/`--delay` pacer and the same concurrency pool; there is no per-probe budget.
 - **`auto` is opt-in** — the default remains the unprivileged `tcp` probe. `auto` must stand alone (`--discovery auto,tcp` is rejected) and logs its resolved order to stderr.
 
+#### Reverse DNS enrichment (`--resolve-ptr`)
+
+`--resolve-ptr` adds identity to each live host: a PTR name (when the resolver has one) and a separate forward-confirmed verdict.
+
+```bash
+asphyxia as -s 192.168.1.0/24 --resolve-ptr -o jsonl
+# {"ip":"192.168.1.10","proto":"tcp","scan":"connect","latency_ms":2,"status":"up","discovery":"tcp","ptr":"db1.example.net","ptr_confirmed":true}
+```
+
+- **Two fields, fact vs verdict** — `ptr` is the observed name; `ptr_confirmed` is `true` only when resolving that name forward returns the original IP. A stale or spoofed PTR is reported with `ptr_confirmed: false`, not silently trusted.
+- **Best effort** — NXDOMAIN, a resolver error or a timeout simply leaves the fields absent; the host record itself is unaffected.
+- **Bounded** — each host's PTR and forward lookup gets its own timeout, so a slow resolver cannot extend the scan past that budget.
+- **Opt-in** — without the flag no DNS is performed.
+
 ### Machine-readable output (`--output`)
 
-By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto` (`tcp`, `udp`, `arp`, or `icmp`), `scan` (the probe that produced it: `connect`, `syn`, `ack`, `fin`, `null`, `xmas`, `arp`, `icmp`, or `none` for `-Pn`), `latency_ms`, and `status`, plus the optional enrichment/reason fields `service`, `banner`, `discovery`, `mac`, `oui`, and `reason` when they are known. JSON/JSON Lines omit unknown fields; CSV always has all twelve columns; grep emits them tab-separated after `latency_ms`, so the original first six columns keep their positions.
+By default Asphyxia prints a colorized, human-friendly report. Pass `--output` (alias `-o`) with one of `json`, `jsonl`, `csv`, or `grep` to emit structured results instead — for example to feed a network map, a spreadsheet, a ticket, or a downstream tool. Each result is a self-contained record with the fields `ip`, `port` (omitted/blank for address scans), `proto` (`tcp`, `udp`, `arp`, or `icmp`), `scan` (the probe that produced it: `connect`, `syn`, `ack`, `fin`, `null`, `xmas`, `arp`, `icmp`, or `none` for `-Pn`), `latency_ms`, and `status`, plus the optional enrichment/reason fields `service`, `banner`, `discovery`, `mac`, `oui`, `reason`, `ptr`, and `ptr_confirmed` when they are known. JSON/JSON Lines omit unknown fields; CSV always has all fourteen columns; grep emits them tab-separated after `latency_ms`, so the original first six columns keep their positions.
 
 ```bash
 # One JSON object per open port, on its own line (JSON Lines)
@@ -503,7 +522,7 @@ asphyxia ps -t example.com -s 22,80,443 -o jsonl
 # A single JSON array of available hosts
 asphyxia as -s 192.168.1.0/24 -o json
 
-# CSV with a header row (ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason)
+# CSV with a header row (ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed)
 asphyxia ps -t example.com --top-ports 100 -o csv
 
 # Greppable, tab-separated columns for grep/awk/cut

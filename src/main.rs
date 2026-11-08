@@ -150,6 +150,8 @@ fn down_record(down: &DownHit) -> ScanRecord {
         mac: None,
         oui: None,
         reason: Some(down.reason),
+        ptr: None,
+        ptr_confirmed: None,
     }
 }
 
@@ -164,6 +166,8 @@ fn all_up(addrs: Vec<IpAddr>) -> Vec<address::HostHit> {
             discovery: "none",
             mac: None,
             oui: None,
+            ptr: None,
+            ptr_confirmed: None,
         })
         .collect()
 }
@@ -296,6 +300,8 @@ fn scan_hosts_arp_first(
                         discovery: "arp",
                         mac: Some(hit.mac.to_string()),
                         oui: Some(hit.mac.oui()),
+                        ptr: None,
+                        ptr_confirmed: None,
                     })
                 }
                 IpAddr::V6(_) => None,
@@ -385,6 +391,8 @@ fn scan_hosts_icmp(
                 discovery: "icmp",
                 mac: None,
                 oui: None,
+                ptr: None,
+                ptr_confirmed: None,
             }),
             // Both are negative, but a destination-unreachable is a fact and
             // silence is its own verdict. Keep them distinct for --show-down.
@@ -536,6 +544,8 @@ fn scan_hosts_combined(
                                     discovery: "arp",
                                     mac: Some(hit.mac.to_string()),
                                     oui: Some(hit.mac.oui()),
+                                    ptr: None,
+                                    ptr_confirmed: None,
                                 }),
                                 None,
                             );
@@ -554,6 +564,8 @@ fn scan_hosts_combined(
                                             discovery: "icmp",
                                             mac: None,
                                             oui: None,
+                                            ptr: None,
+                                            ptr_confirmed: None,
                                         }),
                                         None,
                                     );
@@ -1444,6 +1456,8 @@ fn main() {
                             mac: None,
                             oui: None,
                             reason: None,
+                            ptr: None,
+                            ptr_confirmed: None,
                         })
                         .collect();
                     if let Err(e) = emit(&records, format, output_file.as_deref()) {
@@ -1479,12 +1493,14 @@ fn main() {
             discovery: discovery_modes,
             discovery_ports,
             show_down,
+            resolve_ptr,
             exclude,
             exclude_file,
             timeout,
             ..
         } => {
-            let timeout = Some(Duration::from_millis(timeout));
+            let ptr_timeout = Duration::from_millis(timeout);
+            let timeout = Some(ptr_timeout);
 
             // Resolve --discovery before any probing. `auto` expands to the
             // broadest sensible order; explicit combinations keep their order.
@@ -1545,7 +1561,7 @@ fn main() {
             // materializes the whole address space.
             let materialize = no_discovery || !exclude_set.is_empty();
 
-            let available: DiscoveryReport = if let Some(subnet_str) = subnet {
+            let mut available: DiscoveryReport = if let Some(subnet_str) = subnet {
                 match parse_subnet(&subnet_str) {
                     Ok(network) => {
                         if format == OutputFormat::Text {
@@ -1665,6 +1681,16 @@ fn main() {
                 return;
             };
 
+            // Optional reverse-DNS enrichment. Each lookup has its own timeout,
+            // so a slow resolver cannot extend the scan past that budget.
+            if resolve_ptr {
+                available.up.par_iter_mut().for_each(|hit| {
+                    let (ptr, confirmed) = asphyxia::dns::resolve_ptr(hit.ip, ptr_timeout);
+                    hit.ptr = ptr;
+                    hit.ptr_confirmed = confirmed;
+                });
+            }
+
             match format {
                 OutputFormat::Text => {
                     if !available.up.is_empty() {
@@ -1673,6 +1699,12 @@ fn main() {
                             let mut line = hit.ip.to_string().bright_green().to_string();
                             if let Some(mac) = &hit.mac {
                                 line.push_str(&format!(" {}", mac.as_str().dimmed()));
+                            }
+                            if let Some(ptr) = &hit.ptr {
+                                line.push_str(&format!(" {}", ptr.dimmed()));
+                                if hit.ptr_confirmed == Some(false) {
+                                    line.push_str(" (unconfirmed)");
+                                }
                             }
                             println!("{}", line);
                         }
@@ -1719,6 +1751,8 @@ fn main() {
                             mac: hit.mac.clone(),
                             oui: hit.oui.clone(),
                             reason: None,
+                            ptr: hit.ptr.clone(),
+                            ptr_confirmed: hit.ptr_confirmed,
                         })
                         .collect();
                     if show_down {

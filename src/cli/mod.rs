@@ -198,6 +198,9 @@ Examples:
   # Probe a custom set of TCP ports for host discovery
   asphyxia as -s 192.168.1.0/24 --discovery-ports 445,3389,8080
 
+  # Enrich live hosts with reverse DNS and a forward-confirmed PTR
+  asphyxia as -s 192.168.1.0/24 --resolve-ptr -o jsonl
+
   # Skip host discovery and treat every address as up (like nmap -Pn)
   asphyxia as -s 192.168.1.0/24 --Pn
 
@@ -263,6 +266,7 @@ Required arguments:
     --Pn                         Skip host discovery; treat every target as up
     --discovery-ports <PORTS>    Comma-separated TCP ports for host discovery (default 80,443,22,3389)
     --show-down                  Include ICMP non-responders as status "down" with a reason
+    --resolve-ptr                Enrich live hosts with PTR and forward-confirmed PTR
     --timeout <MS>               Connection timeout in milliseconds (default: 2000)
     -e, --interface <NAME>       Bind every probe to this interface (e.g. en0), like `ssh -B`
 "#
@@ -457,6 +461,10 @@ pub enum Args {
         /// reason "unreachable" or "no-response"). ICMP discovery only.
         #[arg(long = "show-down")]
         show_down: bool,
+
+        /// Enrich live hosts with reverse DNS and a forward-confirmed PTR
+        #[arg(long = "resolve-ptr")]
+        resolve_ptr: bool,
 
         /// Exclude these hosts/CIDRs from the scan (repeatable, comma-separated)
         #[arg(long = "exclude", value_name = "SPEC")]

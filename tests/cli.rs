@@ -329,7 +329,7 @@ fn port_scan_csv_emits_header_even_with_no_open_ports() {
         .assert()
         .success()
         .stdout(predicate::eq(
-            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason\n",
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed\n",
         ));
 }
 
@@ -415,7 +415,7 @@ fn config_supplies_defaults_that_flags_override() {
         .assert()
         .success()
         .stdout(predicate::eq(
-            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason\n",
+            "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed\n",
         ));
 
     let _ = std::fs::remove_file(&path);
@@ -1428,7 +1428,7 @@ fn output_file_writes_machine_output_and_keeps_stdout_clean() {
 
     let contents = std::fs::read_to_string(&path).expect("output file should exist");
     assert!(contents.starts_with(
-        "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason\n"
+        "ip,port,proto,scan,status,latency_ms,service,banner,discovery,mac,oui,reason,ptr,ptr_confirmed\n"
     ));
     let _ = std::fs::remove_file(&path);
 }
@@ -1683,6 +1683,22 @@ fn discovery_auto_rejects_explicit_probes() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("cannot be combined"));
+}
+
+#[test]
+fn resolve_ptr_is_documented_and_optional() {
+    asphyxia()
+        .args(["as", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--resolve-ptr"));
+    // The lookup may find nothing on a hermetic CI host; the invariant is that
+    // enabling it never fails the scan.
+    asphyxia()
+        .args(["as", "-t", "127.0.0.1", "--resolve-ptr", "-o", "jsonl"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"ip\":\"127.0.0.1\""));
 }
 
 #[test]
