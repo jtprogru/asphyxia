@@ -318,30 +318,34 @@ fn format_record(record: &Record) -> String {
 }
 
 /// Render one JSON event per line for downstream consumers.
-pub fn render_jsonl(report: &DiffReport) -> String {
-    let mut out = String::new();
+pub fn events(report: &DiffReport) -> Vec<serde_json::Value> {
+    let mut events = Vec::new();
     for ip in &report.new_hosts {
-        out.push_str(&serde_json::json!({"event": "new_host", "ip": ip}).to_string());
-        out.push('\n');
+        events.push(serde_json::json!({"event": "new_host", "ip": ip}));
     }
     for ip in &report.removed_hosts {
-        out.push_str(&serde_json::json!({"event": "removed_host", "ip": ip}).to_string());
-        out.push('\n');
+        events.push(serde_json::json!({"event": "removed_host", "ip": ip}));
     }
     for record in &report.new_ports {
-        out.push_str(&serde_json::json!({"event": "new_port", "record": record}).to_string());
-        out.push('\n');
+        events.push(serde_json::json!({"event": "new_port", "record": record}));
     }
     for record in &report.removed_ports {
-        out.push_str(&serde_json::json!({"event": "removed_port", "record": record}).to_string());
-        out.push('\n');
+        events.push(serde_json::json!({"event": "removed_port", "record": record}));
     }
     for change in &report.changes {
-        out.push_str(&serde_json::json!({"event": "changed", "change": change}).to_string());
-        out.push('\n');
+        events.push(serde_json::json!({"event": "changed", "change": change}));
     }
     for warning in &report.warnings {
-        out.push_str(&serde_json::json!({"event": "warning", "message": warning}).to_string());
+        events.push(serde_json::json!({"event": "warning", "message": warning}));
+    }
+    events
+}
+
+/// Render one JSON event per line for downstream consumers.
+pub fn render_jsonl(report: &DiffReport) -> String {
+    let mut out = String::new();
+    for event in events(report) {
+        out.push_str(&event.to_string());
         out.push('\n');
     }
     out

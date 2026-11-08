@@ -29,6 +29,7 @@ Asphyxia is a command-line network scanner that helps you discover open ports on
 - **Device classification** — `--classify` labels an asset (`windows`, `printer`, `hypervisor`, `network-device`, `web-server`, or `unknown`) with a confidence, using only ports/banners already collected and the ARP OUI; it never probes again.
 - **Offline ASN / cloud hints** — `--asn` adds `asn`, `asn_org` and `cloud` from a bundled prefix table, with no DNS or API requests and no target IP leaving the machine.
 - **Scan comparison** — `asphyxia diff old.json new.json` reports new/removed hosts and ports plus status, service and banner changes, with a JSON Lines change stream for downstream tools.
+- **Watch mode** — `ps --watch 5m` rescans the same scope on an interval and emits JSON Lines change events, with an explicit baseline, `--watch-count` stop condition, and bounded memory.
 - **Chainable scans** — pipe the hosts an address scan discovers straight into a port scan with `--stdin`, turning host discovery and port scanning into a single pipeline.
 - **IPv4 and IPv6** — connect and UDP scans accept both address families; raw TCP and ARP modes are IPv4-only and fall back visibly for IPv6.
 - **Configurable timeout** — tune the per-connection timeout with `--timeout`.
@@ -183,6 +184,8 @@ Exactly one target source is required — `-t/--host`, `--stdin`, or `-i/--targe
 | `--sV` (`--banner`) | Grab banners and identify the service on each open TCP port |
 | `--classify` | Infer a coarse device type and confidence from already-collected ports/banners (no new probes) |
 | `--asn` | Add offline `asn`, `asn_org` and `cloud` hints from the bundled prefix table; no network requests |
+| `--watch <INTERVAL>` | Rescan every interval (`30s`, `5m`, `1h`) and emit JSON Lines changes; the first pass is a baseline |
+| `--watch-count <N>` | Stop watch mode after N passes (requires `--watch`) |
 | `--resume <PATH>` | Checkpoint progress to a file and resume from it if it already exists |
 | `--top-ports <N>` | Scan the `N` most common TCP ports (frequency-ordered, up to 1000) |
 | `--ports <NAME>` | Scan a named port set: `web`, `mail`, `db`, `remote`, `windows` |
@@ -433,6 +436,8 @@ asphyxia as -s 10.0.0.0/22 --exclude-file skip.txt
 | `--resolve-ptr` | Enrich live hosts with a reverse-DNS PTR name and a separate forward-confirmed verdict (`ptr`, `ptr_confirmed`). Lookups are optional and bounded by the per-host timeout. |
 | `--classify` | Infer a coarse device type and confidence from already-collected ports/banners/OUI (no new probes) |
 | `--asn` | Add offline `asn`, `asn_org` and `cloud` hints from the bundled prefix table; no network requests |
+| `--watch <INTERVAL>` | Rescan every interval (`30s`, `5m`, `1h`) and emit JSON Lines changes; the first pass is a baseline |
+| `--watch-count <N>` | Stop watch mode after N passes (requires `--watch`) |
 | `--exclude <SPEC>` | Exclude hosts/CIDRs from the scan (repeatable; each value may be comma-separated) |
 | `--exclude-file <PATH>` | Exclude hosts/CIDRs listed in a file (one per line; `#` comments allowed) |
 | `--timeout <MS>` | Per-connection timeout in milliseconds (default: 2000) |
@@ -574,6 +579,25 @@ asphyxia diff before.jsonl after.jsonl -o jsonl | jq -c .
 - **Scope warning** — if one file is empty, the host sets are disjoint, or the protocol sets differ, the diff says the target scope may differ instead of silently reporting bogus removals.
 - **Formats** — `-o text` (default), `-o json` (one report), or `-o jsonl` (one event per line: `new_host`, `removed_host`, `new_port`, `removed_port`, `changed`, `warning`). `--output-file` writes the report to a file.
 - **Source** — comparison uses the stable result records, not the `--resume` state file; two scans with different port sets can still be compared.
+
+## Watch mode (`--watch`)
+
+`ps --watch <INTERVAL>` rescans the same command on an interval and emits JSON Lines events instead of a full report:
+
+```bash
+# Baseline, then a change stream every 5 minutes
+asphyxia ps -t example.com --top-ports 1000 --watch 5m
+
+# Stop after three passes (baseline counts as pass 1)
+asphyxia ps -t example.com --top-ports 1000 --watch 30s --watch-count 3
+```
+
+- **Baseline first** — pass 1 emits `{"event":"baseline","pass":1,"records":N,"timestamp":...}` and never claims changes.
+- **Only changes after that** — each later pass is diffed against the immediately previous one and emits the same `new_host`/`removed_host`/`new_port`/`removed_port`/`changed`/`warning` events as `diff`, annotated with `pass` and `timestamp`. A pass with no changes emits `no_changes`.
+- **Bounded memory** — only the previous and current result sets are held; history is not accumulated.
+- **Stop conditions** — `--watch-count N` stops after N passes; Ctrl-C stops cleanly after the current pass.
+- **Per-pass limits** — every pass is a normal scan, so `--rate`, `--delay`, `--timeout`, `--retries`, `--sV`, `--classify` and `--asn` apply to each pass.
+- **Not combinable** — `--watch` rejects `--nmap`, `--stdin`, and `--resume`; `-o`/`--output-file` are ignored because watch output is always a JSON Lines event stream on stdout.
 
 ### Machine-readable output (`--output`)
 

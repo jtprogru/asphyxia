@@ -235,6 +235,9 @@ Examples:
   # Add offline ASN/cloud hints (bundled table; no network requests)
   asphyxia as -s 192.168.1.0/24 --Pn --asn -o jsonl
 
+  # Watch a scan and emit JSON Lines change events (baseline + diffs)
+  asphyxia ps -t example.com --top-ports 100 --watch 5m --watch-count 3
+
   # Emit machine-readable output for a pipeline (text | json | jsonl | csv | grep)
   asphyxia ps -t example.com -s 22,80,443 -o jsonl
   asphyxia as -s 10.0.0.0/24 -o json
@@ -259,6 +262,8 @@ Required arguments:
     --sV                         Grab banners and identify the service on each open port
   --classify                   Infer device type from ports/banners/OUI (no new probes)
   --asn                        Add offline ASN/cloud hints from the bundled table
+  --watch <INTERVAL>           Rescan every INTERVAL (30s, 5m) and emit JSONL change events
+  --watch-count <N>            Stop watch mode after N passes (requires --watch)
     --resume <PATH>              Checkpoint progress and resume from PATH if it exists
     --rate <PPS>                 Cap connection attempts per second (0 = no cap)
     -T, --timing <0-5>           Timing profile (paranoid..insane) presetting the tunables
@@ -370,6 +375,14 @@ pub enum Args {
         /// Add offline ASN/cloud hints from the bundled prefix table (no network)
         #[arg(long = "asn")]
         asn: bool,
+
+        /// Rescan every INTERVAL (e.g. 30s, 5m) and emit JSON Lines change events
+        #[arg(long = "watch", value_name = "INTERVAL")]
+        watch: Option<String>,
+
+        /// Stop watch mode after N passes (baseline counts as pass 1)
+        #[arg(long = "watch-count", value_name = "N", requires = "watch")]
+        watch_count: Option<usize>,
 
         /// After the scan, run nmap on each host's open ports for a deep dive
         #[arg(long = "nmap")]

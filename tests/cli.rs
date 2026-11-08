@@ -1930,3 +1930,79 @@ fn diff_rejects_invalid_input_and_csv_format() {
         .stderr(predicate::str::contains("diff supports"));
     let _ = std::fs::remove_file(&bad);
 }
+
+#[test]
+fn watch_emits_a_baseline_and_stops_at_the_count() {
+    // Port 1 is closed, so both passes produce an empty result set: the first
+    // is the baseline, the second reports no changes.
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--watch",
+            "1ms",
+            "--watch-count",
+            "2",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"event\":\"baseline\""))
+        .stdout(
+            predicate::str::contains("\"event\":\"no_changes\"")
+                .or(predicate::str::contains("\"event\":\"warning\"")),
+        );
+}
+
+#[test]
+fn watch_rejects_invalid_interval_and_nmap() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "--watch", "nonsense"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid --watch interval"));
+
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--watch",
+            "1s",
+            "--watch-count",
+            "1",
+            "--nmap",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--watch cannot be combined with --nmap",
+        ));
+}
+
+#[test]
+fn watch_count_requires_watch_and_rejects_zero() {
+    asphyxia()
+        .args(["ps", "-t", "127.0.0.1", "-s", "1", "--watch-count", "2"])
+        .assert()
+        .failure();
+    asphyxia()
+        .args([
+            "ps",
+            "-t",
+            "127.0.0.1",
+            "-s",
+            "1",
+            "--watch",
+            "1ms",
+            "--watch-count",
+            "0",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("at least 1"));
+}
